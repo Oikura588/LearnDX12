@@ -9,6 +9,11 @@
 #pragma comment(lib,"dxgi.lib")
 
 #include <vector>
+#include <DirectXMath.h>
+
+#include <d3dcompiler.h>
+#pragma comment(lib,"d3dcompiler.lib")
+
 
 
 // Debug.
@@ -205,6 +210,223 @@ int WINAPI WinMain(HINSTANCE,HINSTANCE,LPSTR,int)
     result = _dev->CreateFence(_fenceVal,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&_fence));  
     ShowWindow(hwnd,SW_SHOW);
 
+
+    // 绘制三角形
+    DirectX::XMFLOAT3 vertices[] = {
+        {-0.4f, -0.7f, 0.0f} , // 左下
+         {-0.4f, 0.7f, 0.0f} , // 左上
+         { 0.4f, -0.7f, 0.0f} , // 右下
+         { 0.4f, 0.7f, 0.0f} , // 右上
+    };
+
+    
+    // 创建顶点Buffer
+    D3D12_HEAP_PROPERTIES heapprop = {};
+    heapprop.Type = D3D12_HEAP_TYPE_UPLOAD; //Default: cpu can't access; Upload:cpu can access; Readback: gpu can read from cpu;Custom: must settingother correctly.
+    heapprop.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heapprop.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+    D3D12_RESOURCE_DESC resdesc = {};
+    resdesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    resdesc.Width = sizeof(vertices);
+    resdesc.Height = 1;
+    resdesc.DepthOrArraySize = 1;
+    resdesc.MipLevels = 1;
+    resdesc.SampleDesc.Count = 1;
+    resdesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    resdesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    ID3D12Resource* vertBuffer = nullptr;
+    result = _dev->CreateCommittedResource(
+        &heapprop,
+        D3D12_HEAP_FLAG_NONE,
+        &resdesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(&vertBuffer)
+    );
+
+    // Copy vert data to gpu.
+    DirectX::XMFLOAT3 *vertMap = nullptr;
+    result = vertBuffer->Map(0,nullptr,(void**)&vertMap);
+    std::copy(std::begin(vertices),std::end(vertices),vertMap);
+    vertBuffer->Unmap(0,nullptr);
+
+    // vertex buffer view
+    D3D12_VERTEX_BUFFER_VIEW vbView = {};
+    vbView.BufferLocation = vertBuffer->GetGPUVirtualAddress();
+    vbView.SizeInBytes = sizeof(vertices);
+    vbView.StrideInBytes = sizeof(vertices[0]);
+
+    _cmdList->IASetVertexBuffers(0,1,&vbView);
+
+	unsigned short indices[] = {
+	0,1,2,
+	2,1,3
+	};
+	ID3D12Resource* idxBuffer = nullptr;
+	resdesc.Width = sizeof(indices);
+
+    result = _dev->CreateCommittedResource(
+        &heapprop,
+        D3D12_HEAP_FLAG_NONE,
+        &resdesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(&idxBuffer)
+    );
+
+    unsigned short *mappedIdx = nullptr;
+    idxBuffer->Map(0,nullptr,(void**)&mappedIdx);
+    std::copy(std::begin(indices),std::end(indices),mappedIdx);
+    idxBuffer->Unmap(0,nullptr);
+
+    D3D12_INDEX_BUFFER_VIEW ibView = {};
+    ibView.BufferLocation = idxBuffer->GetGPUVirtualAddress();
+    ibView.Format = DXGI_FORMAT_R16_UINT;
+    ibView.SizeInBytes = sizeof(indices);
+
+
+
+    // 加载Shader并创建ShaderObject.
+    ID3DBlob *_vsBlob = nullptr,*_psBlob = nullptr,*errorBlob;
+
+    result = D3DCompileFromFile(L"BasicVertexShader.hlsl",
+        nullptr,
+        D3D_COMPILE_STANDARD_FILE_INCLUDE,
+        "BasicVS","vs_5_0",
+        D3DCOMPILE_DEBUG| D3DCOMPILE_SKIP_OPTIMIZATION,
+        0,
+        &_vsBlob,&errorBlob
+        );
+    if (FAILED(result))
+    {
+        if (result == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND))
+        {
+            ::OutputDebugStringA("VS shader file not found");
+            return 0;
+        }
+        else
+        {
+            std::string errstr;
+            errstr.resize(errorBlob->GetBufferSize());
+            std::copy_n((char*)errorBlob->GetBufferPointer(),errorBlob->GetBufferSize(),errstr.begin());
+            errstr+="\n";
+			::OutputDebugStringA(errstr.c_str());
+        }
+    }
+
+	result = D3DCompileFromFile(L"BasicPixelShader.hlsl",
+		nullptr,
+		D3D_COMPILE_STANDARD_FILE_INCLUDE,
+		"BasicPS", "ps_5_0",
+		D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION,
+		0,
+		&_psBlob, &errorBlob
+	);
+
+	if (FAILED(result))
+	{
+		if (result == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND))
+		{
+			::OutputDebugStringA("PS shader file not found");
+			return 0;
+		}
+		else
+		{
+			std::string errstr;
+			errstr.resize(errorBlob->GetBufferSize());
+			std::copy_n((char*)errorBlob->GetBufferPointer(), errorBlob->GetBufferSize(), errstr.begin());
+			errstr += "\n";
+			::OutputDebugStringA(errstr.c_str());
+		}
+	}
+
+    // Input layout
+    D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
+        {
+        "POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0,
+        D3D12_APPEND_ALIGNED_ELEMENT,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0
+        },
+    };
+
+    // Graphics pipeline state.
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC gpipeline ={};
+    gpipeline.pRootSignature = nullptr;
+    gpipeline.VS.pShaderBytecode  = _vsBlob->GetBufferPointer();
+    gpipeline.VS.BytecodeLength = _vsBlob->GetBufferSize();
+	gpipeline.PS.pShaderBytecode = _psBlob->GetBufferPointer();
+	gpipeline.PS.BytecodeLength = _psBlob->GetBufferSize();
+
+    gpipeline.SampleMask = D3D12_DEFAULT_SAMPLE_MASK;
+
+    gpipeline.RasterizerState.MultisampleEnable = false;
+    gpipeline.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    gpipeline.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID; 
+    gpipeline.RasterizerState.DepthClipEnable = true;
+
+    gpipeline.BlendState.AlphaToCoverageEnable = false;
+    gpipeline.BlendState.IndependentBlendEnable = false;
+
+    D3D12_RENDER_TARGET_BLEND_DESC renderTargetBlendDesc = {};
+    renderTargetBlendDesc.BlendEnable = false;
+    renderTargetBlendDesc.LogicOpEnable = false;
+    renderTargetBlendDesc.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    
+    gpipeline.BlendState.RenderTarget[0] = renderTargetBlendDesc;
+
+    gpipeline.InputLayout.pInputElementDescs = inputLayout;
+    gpipeline.InputLayout.NumElements = sizeof(inputLayout)/sizeof(inputLayout[0]);
+
+    // IBStripCutValue.
+    gpipeline.IBStripCutValue = D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED;
+    gpipeline.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+
+    // RenderTarget.
+    gpipeline.NumRenderTargets = 1;
+    gpipeline.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;   // 0~1标准化的rgba
+    // Anti-aliasing
+    gpipeline.SampleDesc.Count=1;
+    gpipeline.SampleDesc.Quality = 0;
+
+
+    // Root signature 
+    ID3D12RootSignature* rootSignature = nullptr;
+    D3D12_ROOT_SIGNATURE_DESC rootSignatureDesc = {};
+    rootSignatureDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    ID3DBlob *rootSignalBlob = nullptr;
+    result = D3D12SerializeRootSignature(
+        &rootSignatureDesc,
+        D3D_ROOT_SIGNATURE_VERSION_1_0,
+        &rootSignalBlob,
+        &errorBlob
+        );
+    
+    result = _dev->CreateRootSignature(0,rootSignalBlob->GetBufferPointer(),rootSignalBlob->GetBufferSize(),IID_PPV_ARGS(&rootSignature));
+
+    gpipeline.pRootSignature = rootSignature;
+
+
+	// 创建Pipeline state.
+	ID3D12PipelineState* _pipelinestate = nullptr;
+	result = _dev->CreateGraphicsPipelineState(&gpipeline, IID_PPV_ARGS(&_pipelinestate));
+
+    // Viewport 
+    D3D12_VIEWPORT viewport = {};
+    viewport.Width = window_width;
+    viewport.Height = window_height;
+    viewport.TopLeftX = 0;
+    viewport.TopLeftY = 0;
+    viewport.MaxDepth = 1.0f;
+    viewport.MinDepth = 0.0f;
+
+    D3D12_RECT scissorrect = {};
+    scissorrect.top=0;
+    scissorrect.left = 0;
+    scissorrect.right = scissorrect.left+window_width;
+    scissorrect.bottom = scissorrect.top+window_height;
+
     // 主循环
     MSG msg = {};
     while (true)
@@ -235,8 +457,20 @@ int WINAPI WinMain(HINSTANCE,HINSTANCE,LPSTR,int)
         _cmdList->OMSetRenderTargets(1,&rtvH,true,nullptr);
 
         // 设置Color 并clear
-        float clearColor[] = {1.0f,1.0f,0.0f,1.0f};
+        float clearColor[] = {0.0f,0.0f,0.0f,1.0f};
         _cmdList->ClearRenderTargetView(rtvH,clearColor,0,nullptr);
+
+
+		_cmdList->SetPipelineState(_pipelinestate);
+		_cmdList->SetGraphicsRootSignature(rootSignature);
+		_cmdList->RSSetViewports(1, &viewport);
+		_cmdList->RSSetScissorRects(1, &scissorrect);
+		_cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		_cmdList->IASetVertexBuffers(0, 1, &vbView);
+        _cmdList->IASetIndexBuffer(&ibView);
+		_cmdList->DrawIndexedInstanced(6, 1, 0, 0,0);
+
+
 
       
         // Set barrier before close
