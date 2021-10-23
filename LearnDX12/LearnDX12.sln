@@ -9,6 +9,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Dx12_C4", "Dx12_C4\Dx12_C4.
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "DragonBookC4", "DragonBookC4\DragonBookC4.vcxproj", "{B03CF24B-32CD-48BF-BAE7-F8BDCFF54A7F}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Dx12_C3_Rewrite", "Dx12_C3_Rewrite\Dx12_C3_Rewrite.vcxproj", "{CCA1FE3F-0C84-4B80-8BFA-A5E2DC34D5CA}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -41,6 +43,14 @@ Global
 		{B03CF24B-32CD-48BF-BAE7-F8BDCFF54A7F}.Release|x64.Build.0 = Release|x64
 		{B03CF24B-32CD-48BF-BAE7-F8BDCFF54A7F}.Release|x86.ActiveCfg = Release|Win32
 		{B03CF24B-32CD-48BF-BAE7-F8BDCFF54A7F}.Release|x86.Build.0 = Release|Win32
+		{CCA1FE3F-0C84-4B80-8BFA-A5E2DC34D5CA}.Debug|x64.ActiveCfg = Debug|x64
+		{CCA1FE3F-0C84-4B80-8BFA-A5E2DC34D5CA}.Debug|x64.Build.0 = Debug|x64
+		{CCA1FE3F-0C84-4B80-8BFA-A5E2DC34D5CA}.Debug|x86.ActiveCfg = Debug|Win32
+		{CCA1FE3F-0C84-4B80-8BFA-A5E2DC34D5CA}.Debug|x86.Build.0 = Debug|Win32
+		{CCA1FE3F-0C84-4B80-8BFA-A5E2DC34D5CA}.Release|x64.ActiveCfg = Release|x64
+		{CCA1FE3F-0C84-4B80-8BFA-A5E2DC34D5CA}.Release|x64.Build.0 = Release|x64
+		{CCA1FE3F-0C84-4B80-8BFA-A5E2DC34D5CA}.Release|x86.ActiveCfg = Release|Win32
+		{CCA1FE3F-0C84-4B80-8BFA-A5E2DC34D5CA}.Release|x86.Build.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
