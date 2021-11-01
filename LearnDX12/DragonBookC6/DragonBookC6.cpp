@@ -266,7 +266,7 @@ void BoxApp::BuildShadersAndInputLayout()
 {
     HRESULT hr = S_OK;
     mvsByteCode = d3dUtil::CompileShader(L"Shaders\\color.hlsl",nullptr,"VS","vs_5_0");
-    mpsBytecode = d3dUtil::CompileShader(L"Shaders\\color.hlsl",nullptr,"PS","vs_5_0");
+    mpsBytecode = d3dUtil::CompileShader(L"Shaders\\color.hlsl",nullptr,"PS","ps_5_0");
     mInputLayout = {
         {"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0,0,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0 },
         {"COLOR",0,DXGI_FORMAT_R32G32B32A32_FLOAT,0,12,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0 },
@@ -324,15 +324,55 @@ void BoxApp::BuildBoxGeometry()
         mBoxGeo->VertexBufferUploader
     );
     
-    
-    
+    mBoxGeo->IndexBufferGPU = d3dUtil::CreateDefaultBuffer(
+        md3dDevice.Get(),
+        mCommandList.Get(),
+        indices.data(),
+        ibByteSize,
+        mBoxGeo->IndexBufferUploader
+    );
 
-    
-        
+    mBoxGeo->VertexByteStride = sizeof(Vertex);
+    mBoxGeo->VertexBufferByteSize = vbByteSize;
+    mBoxGeo->IndexFormat = DXGI_FORMAT_R16_UINT;
+    mBoxGeo->IndexBufferByteSize = ibByteSize;
+
+    SubmeshGeometry submesh;
+    submesh.IndexCount = (UINT) indices.size();
+    submesh.StartIndexLocation = 0;
+    submesh.BaseVertexLocation = 0;
+
+    mBoxGeo->DrawArgs["box"] = submesh; 
 }
 
 void BoxApp::BuildPSO()
 {
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+    psoDesc.InputLayout = {mInputLayout.data(),(UINT)mInputLayout.size()};
+    psoDesc.pRootSignature = mRootSignature.Get();
+
+    psoDesc.VS = {
+        reinterpret_cast<BYTE*>(mvsByteCode->GetBufferPointer()),
+        mvsByteCode->GetBufferSize()
+    };
+    psoDesc.VS = {
+        reinterpret_cast<BYTE*>(mpsBytecode->GetBufferPointer()),
+        mpsBytecode->GetBufferSize()
+    };
+    psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+    psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+    psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+    psoDesc.SampleMask = UINT_MAX;
+    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    psoDesc.NumRenderTargets = 1;
+    psoDesc.RTVFormats[0] = mBackBufferFormat;
+    psoDesc.DSVFormat = mDepthStencilFormat ;
+    ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
+        &psoDesc,IID_PPV_ARGS(&mPSO)
+    ));
+    
+    
+    
 }
 
 int WINAPI WinMain(HINSTANCE hInstance,HINSTANCE prevInstance,PSTR cmdLine,int showCmd)
