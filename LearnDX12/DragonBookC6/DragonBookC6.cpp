@@ -166,20 +166,78 @@ void BoxApp::Draw(const GameTimer& gt)
     // 指定渲染视图
     mCommandList->OMSetRenderTargets(1,&CurrentBackBufferView(),true,&DepthStencilView());
 
-    // 描述符相关.
+    // 描述符相关.用来更新常量缓冲区
+    ID3D12DescriptorHeap* descHeaps[] =  {mCbvHeap.Get()};
+    mCommandList->SetDescriptorHeaps(_countof(descHeaps),descHeaps);
+    mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
+    mCommandList->IASetVertexBuffers(0,1,&mBoxGeo->VertexBufferView());
+    mCommandList->IASetIndexBuffer(&mBoxGeo->IndexBufferView());
+    mCommandList->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    mCommandList->SetGraphicsRootDescriptorTable(0,mCbvHeap->GetGPUDescriptorHandleForHeapStart());
+    mCommandList->DrawIndexedInstanced(mBoxGeo->DrawArgs["box"].IndexCount,1,0,0,0);
+
+    // 绘制完成后改变资源状态.
+    mCommandList->ResourceBarrier(
+        1,&CD3DX12_RESOURCE_BARRIER::Transition(
+            CurrentBackBuffer(),
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            D3D12_RESOURCE_STATE_PRESENT
+        )
+    );
+    mCommandList->Close();
+
+    ID3D12CommandList* cmdLists[] = {mCommandList.Get()};
+    mCommandQueue->ExecuteCommandLists(_countof(cmdLists),cmdLists);
+
+    mSwapChain->Present(0,0);
+    mCurrBackBuffer = (mCurrBackBuffer+1)%SwapChainBufferCount;
+    FlushCommandQueue();
     
 }
 
 void BoxApp::OnMouseDown(WPARAM btnState, int x, int y)
 {
+    mLastMousePos.x = x;
+    mLastMousePos.y = y;
+
+    SetCapture(mhMainWnd);
 }
 
 void BoxApp::OnMouseUp(WPARAM btnState, int x, int y)
 {
+    ReleaseCapture();
 }
 
 void BoxApp::OnMouseMove(WPARAM btnState, int x, int y)
 {
+    if((btnState & MK_LBUTTON) != 0)
+    {
+        // Make each pixel correspond to a quarter of a degree.
+        float dx = XMConvertToRadians(0.25f*static_cast<float>(x - mLastMousePos.x));
+        float dy = XMConvertToRadians(0.25f*static_cast<float>(y - mLastMousePos.y));
+
+        // Update angles based on input to orbit camera around box.
+        mTheta += dx;
+        mPhi += dy;
+
+        // Restrict the angle mPhi.
+        mPhi = MathHelper::Clamp(mPhi, 0.1f, MathHelper::Pi - 0.1f);
+    }
+    else if((btnState & MK_RBUTTON) != 0)
+    {
+        // Make each pixel correspond to 0.005 unit in the scene.
+        float dx = 0.005f*static_cast<float>(x - mLastMousePos.x);
+        float dy = 0.005f*static_cast<float>(y - mLastMousePos.y);
+
+        // Update the camera radius based on input.
+        mRadius += dx - dy;
+
+        // Restrict the radius.
+        mRadius = MathHelper::Clamp(mRadius, 3.0f, 15.0f);
+    }
+
+    mLastMousePos.x = x;
+    mLastMousePos.y = y;
 }
 
 void BoxApp::BuildDescriptorHeap()
@@ -267,9 +325,14 @@ void BoxApp::BuildShadersAndInputLayout()
     HRESULT hr = S_OK;
     mvsByteCode = d3dUtil::CompileShader(L"Shaders\\color.hlsl",nullptr,"VS","vs_5_0");
     mpsBytecode = d3dUtil::CompileShader(L"Shaders\\color.hlsl",nullptr,"PS","ps_5_0");
-    mInputLayout = {
-        {"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0,0,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0 },
-        {"COLOR",0,DXGI_FORMAT_R32G32B32A32_FLOAT,0,12,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0 },
+    // mInputLayout = {
+    //     {"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0,0,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0 },
+    //     {"COLOR",0,DXGI_FORMAT_R32G32B32A32_FLOAT,0,12,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0 },
+    // };
+    mInputLayout =
+    {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+{ "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
     };
 }
 
@@ -303,17 +366,17 @@ void BoxApp::BuildBoxGeometry()
         4,3,7
     };
 
-    const UINT vbByteSize = sizeof(vertices)*sizeof(Vertex);
-    const UINT ibByteSize = sizeof(indices)*sizeof(std::uint16_t);
+    const UINT vbByteSize = (UINT)vertices.size()*sizeof(Vertex);
+    const UINT ibByteSize = (UINT)indices.size()*sizeof(std::uint16_t);
 
     mBoxGeo = std::make_unique<MeshGeometry>();
     mBoxGeo->Name = "BoxGeo";
 
     // vertex buffer.
-    D3DCreateBlob(vbByteSize,&(mBoxGeo->VertexBufferCPU));
+    ThrowIfFailed( D3DCreateBlob(vbByteSize,&(mBoxGeo->VertexBufferCPU)));
     CopyMemory(mBoxGeo->VertexBufferCPU->GetBufferPointer(),vertices.data(),vbByteSize);
 
-    D3DCreateBlob(ibByteSize,&(mBoxGeo->IndexBufferCPU));
+    ThrowIfFailed( D3DCreateBlob(ibByteSize,&(mBoxGeo->IndexBufferCPU)));
     CopyMemory(mBoxGeo->IndexBufferCPU->GetBufferPointer(),indices.data(),ibByteSize);
 
     mBoxGeo->VertexBufferGPU = d3dUtil::CreateDefaultBuffer(
@@ -348,6 +411,7 @@ void BoxApp::BuildBoxGeometry()
 void BoxApp::BuildPSO()
 {
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+    ZeroMemory(&psoDesc, sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
     psoDesc.InputLayout = {mInputLayout.data(),(UINT)mInputLayout.size()};
     psoDesc.pRootSignature = mRootSignature.Get();
 
@@ -355,7 +419,7 @@ void BoxApp::BuildPSO()
         reinterpret_cast<BYTE*>(mvsByteCode->GetBufferPointer()),
         mvsByteCode->GetBufferSize()
     };
-    psoDesc.VS = {
+    psoDesc.PS = {
         reinterpret_cast<BYTE*>(mpsBytecode->GetBufferPointer()),
         mpsBytecode->GetBufferSize()
     };
@@ -366,13 +430,12 @@ void BoxApp::BuildPSO()
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     psoDesc.NumRenderTargets = 1;
     psoDesc.RTVFormats[0] = mBackBufferFormat;
+    psoDesc.SampleDesc.Count = m4xMsaaState?4:1;
+    psoDesc.SampleDesc.Quality = m4xMsaaQuality?(m4xMsaaQuality-1):0;
     psoDesc.DSVFormat = mDepthStencilFormat ;
     ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
         &psoDesc,IID_PPV_ARGS(&mPSO)
     ));
-    
-    
-    
 }
 
 int WINAPI WinMain(HINSTANCE hInstance,HINSTANCE prevInstance,PSTR cmdLine,int showCmd)
