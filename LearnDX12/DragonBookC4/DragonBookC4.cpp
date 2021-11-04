@@ -1,4 +1,4 @@
-#include "Common/d3dApp.h"
+#include "../Common/d3dApp.h"
 #include <DirectXColors.h>
 
 class InitDirect3DApp: public D3DApp

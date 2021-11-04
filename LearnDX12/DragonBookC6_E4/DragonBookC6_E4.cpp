@@ -1,6 +1,6 @@
-#include "Common/d3dApp.h"
-#include "Common/MathHelper.h"
-#include "Common/UploadBuffer.h"
+#include "../Common/d3dApp.h"
+#include "../Common/MathHelper.h"
+#include "../Common/UploadBuffer.h"
 
 #include <DirectXColors.h>
 using Microsoft::WRL::ComPtr;
@@ -339,7 +339,7 @@ void BoxApp::BuildShadersAndInputLayout()
 
 void BoxApp::BuildBoxGeometry()
 {
-    // 四棱锥.
+    // Pyramid.
     //          (0,0,1) 0
     //          
     //     (-1,-1,-1) 1   (-1,1,-1)2

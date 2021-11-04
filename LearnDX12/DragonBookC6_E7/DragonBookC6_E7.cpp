@@ -1,3 +1,9 @@
+// 第七题前面合并顶点和索引好说，ConstantBuffer需要处理下
+// CB是CPU计算并上传的，但是目前的机制中没理解错的话一帧内CPU只能上传一次，在Draw中修改缓冲区的值并没有用
+// 因此可能需要两个缓冲区?
+
+
+
 #include "../Common/d3dApp.h"
 #include "../Common/MathHelper.h"
 #include "../Common/UploadBuffer.h"
@@ -14,9 +20,14 @@ struct Vertex
     XMFLOAT4 Color;
 };
 // 常量缓冲 MVP
+// 常量缓冲区需要内存对齐,龙书中例程使用辅助函数帮助处理了这一点，使得不需要手动对齐，不过需要注意.
 struct ObjectConstants
 {
     XMFLOAT4X4 ModelViewProj = MathHelper::Identity4x4();
+    // Begin exercise 16
+    // XMFLOAT4 gPulseColor;
+    // End exercise 16
+    float gTime;
 };
 
 class BoxApp : public D3DApp
@@ -47,8 +58,12 @@ private:
 private:
     ComPtr<ID3D12RootSignature> mRootSignature  = nullptr;
     ComPtr<ID3D12DescriptorHeap> mCbvHeap       = nullptr;
+    ComPtr<ID3D12DescriptorHeap> mCbvHeapPyramid       = nullptr;
+
 
     std::unique_ptr<UploadBuffer<ObjectConstants>> mObjectCB = nullptr;
+    std::unique_ptr<UploadBuffer<ObjectConstants>> mPyramidCB = nullptr;
+
     std::unique_ptr<MeshGeometry> mBoxGeo =nullptr;
     // Shaders.
     ComPtr<ID3DBlob> mvsByteCode = nullptr;
@@ -112,6 +127,15 @@ void BoxApp::OnResize()
     // 更新纵横比、重算投影矩阵.
     XMMATRIX P = XMMatrixPerspectiveFovLH(0.25*MathHelper::Pi,AspectRatio(),1.0f,1000.0f);
     XMStoreFloat4x4(&mProj,P);
+    // Begin Exercise 12 
+    // 更新Viewport.只渲染左边场景的话要往右移
+    // mScreenViewport.TopLeftX =mClientWidth/2;
+    // End Exercise 12
+
+    // Begin Exercise 13
+    // mScissorRect.right = mClientWidth/2;
+    // mScissorRect.bottom = mClientWidth/2;
+    // End Exercise 13
 }
 
 
@@ -130,15 +154,28 @@ void BoxApp::Update(const GameTimer& gt)
     XMMATRIX view = XMMatrixLookAtLH(pos,target,up);
     XMStoreFloat4x4(&mView,view);
 
-    XMMATRIX model = XMLoadFloat4x4(&mWorld);
+    
+    XMMATRIX modelPyramid = XMMatrixTranslation(1.2,0,0);
+    // 更新常量缓冲区.
+    XMMATRIX modelBox = XMMatrixTranslation(-1.2,0,0);
     XMMATRIX proj = XMLoadFloat4x4(&mProj);
-    XMMATRIX mvp = model*view*proj;
+    XMMATRIX mvp = modelBox*view*proj;
 
     // 更新常量缓冲区.
     ObjectConstants objectConstants;
+    // Begin Exercise 16
+    // objectConstants.gPulseColor = XMFLOAT4( Colors::Red);
+    // End Exercise 16.
     // hlsl是列主序矩阵，DXMath中的矩阵传递时需要转置
     XMStoreFloat4x4(&objectConstants.ModelViewProj,XMMatrixTranspose( mvp));
+    objectConstants.gTime = gt.TotalTime();
     mObjectCB->CopyData(0,objectConstants);
+
+    // Pyramid
+    mvp =  modelPyramid*view*proj;
+    XMStoreFloat4x4(&objectConstants.ModelViewProj,XMMatrixTranspose( mvp));
+    mPyramidCB->CopyData(0,objectConstants);
+
 }
 
 void BoxApp::Draw(const GameTimer& gt)
@@ -166,16 +203,33 @@ void BoxApp::Draw(const GameTimer& gt)
     // 指定渲染视图
     mCommandList->OMSetRenderTargets(1,&CurrentBackBufferView(),true,&DepthStencilView());
 
-    // 描述符相关.用来更新常量缓冲区
-    ID3D12DescriptorHeap* descHeaps[] =  {mCbvHeap.Get()};
-    mCommandList->SetDescriptorHeaps(_countof(descHeaps),descHeaps);
-    mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
     mCommandList->IASetVertexBuffers(0,1,&mBoxGeo->VertexBufferView());
     mCommandList->IASetIndexBuffer(&mBoxGeo->IndexBufferView());
     mCommandList->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    mCommandList->SetGraphicsRootDescriptorTable(0,mCbvHeap->GetGPUDescriptorHandleForHeapStart());
-    mCommandList->DrawIndexedInstanced(mBoxGeo->DrawArgs["box"].IndexCount,1,0,0,0);
+    mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
+    
 
+
+    // 绘制Box
+    // Box的ConstantBuffer.
+
+   
+    // 描述符相关.用来更新常量缓冲区
+    ID3D12DescriptorHeap* descHeaps[] =  {mCbvHeap.Get()};
+    mCommandList->SetDescriptorHeaps(_countof(descHeaps),descHeaps);
+    mCommandList->SetGraphicsRootDescriptorTable(0,mCbvHeap->GetGPUDescriptorHandleForHeapStart());
+    mCommandList->DrawIndexedInstanced(mBoxGeo->DrawArgs["box"].IndexCount,1,mBoxGeo->DrawArgs["box"].StartIndexLocation,mBoxGeo->DrawArgs["box"].BaseVertexLocation,0);
+
+    
+    // 绘制金字塔.
+    // 设置金字塔的常量缓冲区描述符
+    ID3D12DescriptorHeap* pyramidDescHeaps[] =  {mCbvHeapPyramid.Get()};
+    mCommandList->SetDescriptorHeaps(_countof(pyramidDescHeaps),pyramidDescHeaps);
+    mCommandList->SetGraphicsRootDescriptorTable(0,mCbvHeapPyramid->GetGPUDescriptorHandleForHeapStart());
+    
+    mCommandList->DrawIndexedInstanced(mBoxGeo->DrawArgs["pyramid"].IndexCount,1,mBoxGeo->DrawArgs["pyramid"].StartIndexLocation,mBoxGeo->DrawArgs["pyramid"].BaseVertexLocation,0);
+
+    
     // 绘制完成后改变资源状态.
     mCommandList->ResourceBarrier(
         1,&CD3DX12_RESOURCE_BARRIER::Transition(
@@ -248,11 +302,14 @@ void BoxApp::BuildDescriptorHeap()
     cbvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     cbvHeapDesc.NumDescriptors = 1;
     ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&cbvHeapDesc,IID_PPV_ARGS(&mCbvHeap)));
+    ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&cbvHeapDesc,IID_PPV_ARGS(&mCbvHeapPyramid)));
+
 }
 
 void BoxApp::BuildConstantBuffer()
 {
     mObjectCB = std::make_unique<UploadBuffer<ObjectConstants>>(md3dDevice.Get(),1,true);
+    // 这里会帮忙对齐
     UINT objCBBytesize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
 
     D3D12_GPU_VIRTUAL_ADDRESS cbAddress = mObjectCB->Resource()->GetGPUVirtualAddress();
@@ -266,6 +323,20 @@ void BoxApp::BuildConstantBuffer()
     md3dDevice->CreateConstantBufferView(
         &cbvDesc,
         mCbvHeap->GetCPUDescriptorHandleForHeapStart()
+    );
+
+    // 重复以上处理，创建第二个Heap
+    mPyramidCB = std::make_unique<UploadBuffer<ObjectConstants>>(md3dDevice.Get(),1,true);
+    // 这里会帮忙对齐
+    cbAddress = mPyramidCB->Resource()->GetGPUVirtualAddress();
+    // 偏移到常量缓冲区中第i个物体对应的常量数据.这里取i=0
+    boxCBufIdx = 0;
+    cbAddress+=boxCBufIdx*objCBBytesize;
+    cbvDesc.BufferLocation = cbAddress;
+    cbvDesc.SizeInBytes = objCBBytesize;
+    md3dDevice->CreateConstantBufferView(
+        &cbvDesc,
+        mCbvHeapPyramid->GetCPUDescriptorHandleForHeapStart()
     );
 }
 
@@ -338,8 +409,9 @@ void BoxApp::BuildShadersAndInputLayout()
 
 void BoxApp::BuildBoxGeometry()
 {
-    std::array<Vertex,8> vertices =
+    std::vector<Vertex> vertices =
     {
+        // Box
         Vertex({XMFLOAT3(-1.0F,-1.0F,-1.0F),XMFLOAT4(Colors::White)}),
         Vertex({XMFLOAT3(-1.0F,+1.0F,-1.0F),XMFLOAT4(Colors::Black)}),
         Vertex({XMFLOAT3(+1.0F,+1.0F,-1.0F),XMFLOAT4(Colors::Red)}),
@@ -349,9 +421,9 @@ void BoxApp::BuildBoxGeometry()
         Vertex({XMFLOAT3(+1.0F,+1.0F,+1.0F),XMFLOAT4(Colors::Cyan)}),
         Vertex({XMFLOAT3(+1.0F,-1.0F,+1.0F),XMFLOAT4(Colors::Magenta)}),
     };
-
-    std::array<std::uint16_t,36> indices =
+    std::vector<std::uint16_t> indices =
     {
+        // Box
         0,1,2,
         0,2,3,
         4,6,5,
@@ -365,6 +437,44 @@ void BoxApp::BuildBoxGeometry()
         4,0,3,
         4,3,7
     };
+
+    SubmeshGeometry submesh;
+    submesh.IndexCount = (UINT) indices.size();
+    submesh.StartIndexLocation = 0;
+    submesh.BaseVertexLocation = 0;
+
+    
+    // Pyramid.
+    //          (0,0,1) 0
+    //          
+    //     (-1,-1,-1) 1   (-1,1,-1)2
+    //          (1,-1,-1) 3           (1,1,-1)4
+    std::vector<Vertex> pyramidVertices =
+    {
+        Vertex({XMFLOAT3( 0.0F, 0.0F, 1.0F),XMFLOAT4(Colors::White)}),
+        Vertex({XMFLOAT3(-1.0F,-1.0F,-1.0F),XMFLOAT4(Colors::Black)}),
+        Vertex({XMFLOAT3(-1.0F,+1.0F,-1.0F),XMFLOAT4(Colors::Red)}),
+        Vertex({XMFLOAT3(+1.0F,-1.0F,-1.0F),XMFLOAT4(Colors::Green)}),
+        Vertex({XMFLOAT3(+1.0F,+1.0F,-1.0F),XMFLOAT4(Colors::Blue)}),
+    };
+
+    std::vector<std::uint16_t> pyramidIndices =
+    {
+        0,2,1,
+        0,1,3,
+        0,3,4,
+        0,4,2,
+        1,2,3,
+        2,4,3
+    };
+    SubmeshGeometry submesh_Pyramid;
+    submesh_Pyramid.IndexCount = (UINT)pyramidIndices.size();
+    submesh_Pyramid.StartIndexLocation = submesh.IndexCount;
+    submesh_Pyramid.BaseVertexLocation = vertices.size();
+    
+    vertices.insert(vertices.end(),pyramidVertices.begin(),pyramidVertices.end());
+    indices.insert(indices.end(),pyramidIndices.begin(),pyramidIndices.end());
+    
 
     const UINT vbByteSize = (UINT)vertices.size()*sizeof(Vertex);
     const UINT ibByteSize = (UINT)indices.size()*sizeof(std::uint16_t);
@@ -400,12 +510,10 @@ void BoxApp::BuildBoxGeometry()
     mBoxGeo->IndexFormat = DXGI_FORMAT_R16_UINT;
     mBoxGeo->IndexBufferByteSize = ibByteSize;
 
-    SubmeshGeometry submesh;
-    submesh.IndexCount = (UINT) indices.size();
-    submesh.StartIndexLocation = 0;
-    submesh.BaseVertexLocation = 0;
-
-    mBoxGeo->DrawArgs["box"] = submesh; 
+ 
+ 
+    mBoxGeo->DrawArgs["box"] = submesh;
+    mBoxGeo->DrawArgs["pyramid"] = submesh_Pyramid;
 }
 
 void BoxApp::BuildPSO()
@@ -424,6 +532,8 @@ void BoxApp::BuildPSO()
         mpsBytecode->GetBufferSize()
     };
     psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+    // Exercise 8 .
+    // psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_WIREFRAME;
     psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
     psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
     psoDesc.SampleMask = UINT_MAX;

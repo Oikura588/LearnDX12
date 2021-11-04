@@ -14,9 +14,11 @@ struct Vertex
     XMFLOAT4 Color;
 };
 // 常量缓冲 MVP
+// 常量缓冲区需要内存对齐,龙书中例程使用辅助函数帮助处理了这一点，使得不需要手动对齐，不过需要注意.
 struct ObjectConstants
 {
     XMFLOAT4X4 ModelViewProj = MathHelper::Identity4x4();
+    float gTime;
 };
 
 class BoxApp : public D3DApp
@@ -138,6 +140,7 @@ void BoxApp::Update(const GameTimer& gt)
     ObjectConstants objectConstants;
     // hlsl是列主序矩阵，DXMath中的矩阵传递时需要转置
     XMStoreFloat4x4(&objectConstants.ModelViewProj,XMMatrixTranspose( mvp));
+    objectConstants.gTime = gt.TotalTime();
     mObjectCB->CopyData(0,objectConstants);
 }
 
@@ -253,6 +256,7 @@ void BoxApp::BuildDescriptorHeap()
 void BoxApp::BuildConstantBuffer()
 {
     mObjectCB = std::make_unique<UploadBuffer<ObjectConstants>>(md3dDevice.Get(),1,true);
+    // 这里会帮忙对齐
     UINT objCBBytesize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
 
     D3D12_GPU_VIRTUAL_ADDRESS cbAddress = mObjectCB->Resource()->GetGPUVirtualAddress();

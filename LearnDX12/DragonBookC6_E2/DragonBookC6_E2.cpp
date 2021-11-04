@@ -1,6 +1,6 @@
-#include "Common/d3dApp.h"
-#include "Common/MathHelper.h"
-#include "Common/UploadBuffer.h"
+#include "../Common/d3dApp.h"
+#include "../Common/MathHelper.h"
+#include "../Common/UploadBuffer.h"
 
 #include <DirectXColors.h>
 using Microsoft::WRL::ComPtr;
