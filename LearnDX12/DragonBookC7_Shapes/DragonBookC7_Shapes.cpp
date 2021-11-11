@@ -12,7 +12,7 @@ const int gNumFrameResources = 3;
 // Params to draw a shape.This will vary from app-to-app.
 struct RenderItem
 {
-    RenderItem() = delete;
+    RenderItem() = default;
 
     // World Transform.
     XMFLOAT4X4 World = MathHelper::Identity4x4();
@@ -160,6 +160,9 @@ void ShapesApp::Update(const GameTimer& gt)
     mCurrentFrameResourceIndex = (mCurrentFrameResourceIndex+1)%gNumFrameResources;
     mCurrentFrameResource = mFrameResources[mCurrentFrameResourceIndex].get();
 
+    //CPU: [0,0,0] -> [0,1,0] -> [0,1,2] -> [3,1,2]----------[3,4,2]->[3,4,5]->[6,4,5]---------[3,7,2]....
+    //GPU: [0]-----------------------------------------------[1]-------------------------------[4]
+
     // Has the gpu finished processing the commands of the current frame resource?
     // If not,wait until GPU has completed commands up to the fence point.
     if(mCurrentFrameResource->Fence!=0&&mFence->GetCompletedValue()<mCurrentFrameResource->Fence)
@@ -201,7 +204,7 @@ void ShapesApp::Draw(const GameTimer& gt)
     mCommandList->ClearRenderTargetView(CurrentBackBufferView(),Colors::LightSteelBlue,0,nullptr);
     mCommandList->ClearDepthStencilView(DepthStencilView(),D3D12_CLEAR_FLAG_DEPTH|D3D12_CLEAR_FLAG_STENCIL,1.0f,0,0,nullptr);
 
-    mCommandList->OMSetRenderTargets(1,&CurrentBackBufferView,true,&DepthStencilView());
+    mCommandList->OMSetRenderTargets(1,&CurrentBackBufferView(),true,&DepthStencilView());
 
     // 常量缓冲区相关
     ID3D12DescriptorHeap* descriptorHeaps[] = {mCbvHeap.Get()};
@@ -238,42 +241,182 @@ void ShapesApp::Draw(const GameTimer& gt)
 
 void ShapesApp::OnMouseDown(WPARAM btnState, int x, int y)
 {
+    mLastMousePos.x = x;
+    mLastMousePos.y = y;
+    SetCapture(mhMainWnd);
 }
 
 void ShapesApp::OnMouseUp(WPARAM btnState, int x, int y)
 {
+    ReleaseCapture();
 }
 
 void ShapesApp::OnMouseMove(WPARAM btnState, int x, int y)
 {
+    if((btnState&MK_LBUTTON)!=0)
+    {
+        float dx = XMConvertToRadians(0.25f*static_cast<float>(x-mLastMousePos.x));
+        float dy = XMConvertToRadians(0.25f*static_cast<float>(y-mLastMousePos.y));
+
+        mTheta+=dx;
+        mPhi+=dy;
+
+        mPhi = MathHelper::Clamp(mPhi,0.1f,MathHelper::Pi-0.1F);
+    }
+    else if((btnState&&MK_RBUTTON)!=0)
+    {
+        // Make each pixel correspond to 0.2 unit in the scene.
+        float dx = 0.05f*static_cast<float>(x - mLastMousePos.x);
+        float dy = 0.05f*static_cast<float>(y - mLastMousePos.y);
+
+        // Update the camera radius based on input.
+        mRadius += dx - dy;
+
+        // Restrict the radius.
+        mRadius = MathHelper::Clamp(mRadius, 5.0f, 150.0f);
+    }
+
+    mLastMousePos.x = x;
+    mLastMousePos.y = y;
 }
 
 void ShapesApp::OnKeyboardInput(const GameTimer& gt)
 {
+    if(GetAsyncKeyState('1')&0x8000)
+        mIsWireframe = true;
+    else
+        mIsWireframe = false;
 }
 
 void ShapesApp::UpdateCamera(const GameTimer& gt)
 {
+    // Convert Spherical to Cartesian coordinates.
+    mEyePos.x = mRadius*sinf(mPhi)*cosf(mTheta);
+    mEyePos.z = mRadius*sinf(mPhi)*sinf(mTheta);
+    mEyePos.y = mRadius*cosf(mPhi);
+
+    // Build the view matrix.
+    XMVECTOR pos = XMVectorSet(mEyePos.x, mEyePos.y, mEyePos.z, 1.0f);
+    XMVECTOR target = XMVectorZero();
+    XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+
+    XMMATRIX view = XMMatrixLookAtLH(pos, target, up);
+    XMStoreFloat4x4(&mView, view);
 }
 
 void ShapesApp::UpdateObjectCBs(const GameTimer& gt)
 {
+    auto currObjectCB = mCurrentFrameResource->ObjectCB.get();
+    for(auto& e:mAllRitems)
+    {
+        // Only update the cbuffer if the constants has changed.
+        // This needs to be tracked per frame resource.
+        if(e->NumFramesDirty>0)
+        {
+            XMMATRIX world = XMLoadFloat4x4(&e->World);
+            ObjectConstants objConstants;
+            XMStoreFloat4x4(&objConstants.World,XMMatrixTranspose(world));
+            currObjectCB->CopyData(e->ObjCBIndex,objConstants);
+
+            // Next frame resource need to be update too..
+            // 这个值相当于还要更新几次(Update没被GPU卡住前会一直跑).
+            e->NumFramesDirty--;
+        }
+    }
 }
 
 void ShapesApp::UpdateMainPassCB(const GameTimer& gt)
 {
+    XMMATRIX view = XMLoadFloat4x4(&mView);
+    XMMATRIX proj = XMLoadFloat4x4(&mProj);
+
+    XMMATRIX viewProj = XMMatrixMultiply(view,proj);
+    XMMATRIX invView = XMMatrixInverse(&XMMatrixDeterminant(view), view);
+    XMMATRIX invProj = XMMatrixInverse(&XMMatrixDeterminant(proj), proj);
+    XMMATRIX invViewProj = XMMatrixInverse(&XMMatrixDeterminant(viewProj), viewProj);
+    XMStoreFloat4x4(&mMainPassCB.View, XMMatrixTranspose(view));
+    XMStoreFloat4x4(&mMainPassCB.InvView, XMMatrixTranspose(invView));
+    XMStoreFloat4x4(&mMainPassCB.Proj, XMMatrixTranspose(proj));
+    XMStoreFloat4x4(&mMainPassCB.InvProj, XMMatrixTranspose(invProj));
+    XMStoreFloat4x4(&mMainPassCB.ViewProj, XMMatrixTranspose(viewProj));
+    XMStoreFloat4x4(&mMainPassCB.InvViewProj, XMMatrixTranspose(invViewProj));
+    mMainPassCB.EyePosW = mEyePos;
+    mMainPassCB.RenderTargetSize = XMFLOAT2((float)mClientWidth, (float)mClientHeight);
+    mMainPassCB.InvRenderTargetSize = XMFLOAT2(1.0f / mClientWidth, 1.0f / mClientHeight);
+    mMainPassCB.NearZ = 1.0f;
+    mMainPassCB.FarZ = 1000.0f;
+    mMainPassCB.TotalTime = gt.TotalTime();
+    mMainPassCB.DeltaTime = gt.DeltaTime();
+
+    auto currPassCB = mCurrentFrameResource->PassCB.get();
+    currPassCB->CopyData(0, mMainPassCB);
 }
 
 void ShapesApp::BuildDescriptorHeaps()
 {
+    UINT objCount = (UINT)mOpaqueRitems.size();
+
+    // Need a cbv descriptor for each object for each frame resource.
+    // +1 for the pass cbv for each frame resource.
+    UINT numDescriptors = (objCount+1)*gNumFrameResources;
+    // Save a offset to the start of the pass CBVs.
+    mPassCbvOffset = objCount*gNumFrameResources;
+
+    D3D12_DESCRIPTOR_HEAP_DESC cbvHeapDesc;
+    cbvHeapDesc.NumDescriptors = numDescriptors;
+    cbvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    cbvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    cbvHeapDesc.NodeMask = 0;
+    md3dDevice->CreateDescriptorHeap(&cbvHeapDesc,IID_PPV_ARGS(&mCbvHeap));
 }
 
 void ShapesApp::BuildConstantBufferViews()
 {
+    UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
+    UINT objCount = (UINT)mOpaqueRitems.size();
+
+    // Need a CBV descriptor for each object for each frame resource.
+    for(int frameIndex = 0; frameIndex<gNumFrameResources;++frameIndex)
+    {
+        auto objectCB = mFrameResources[frameIndex]->ObjectCB->Resource();
+        for(UINT i = 0; i<objCount; ++i)
+        {
+            D3D12_GPU_VIRTUAL_ADDRESS cbAddress = objectCB->GetGPUVirtualAddress();
+            // offset to the ith object constant buffer in the buffer.
+            cbAddress += i*objCBByteSize;
+            // offset to the object cbv in the descriptor heap.
+            int heapIndex = frameIndex*objCount + i ;
+            auto handle = CD3DX12_CPU_DESCRIPTOR_HANDLE(mCbvHeap->GetCPUDescriptorHandleForHeapStart());
+            handle.Offset(heapIndex,mCbvSrvUavDescriptorSize);
+
+            D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
+            cbvDesc.BufferLocation = cbAddress;
+            cbvDesc.SizeInBytes = objCBByteSize;
+            md3dDevice->CreateConstantBufferView(&cbvDesc,handle);      
+        }
+    }
+    UINT passCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(PassConstants));
+
+    for(int frameIndex = 0;frameIndex<gNumFrameResources;++frameIndex)
+    {
+        auto passCB = mFrameResources[frameIndex]->PassCB->Resource();
+        D3D12_GPU_VIRTUAL_ADDRESS cbAddress = passCB->GetGPUVirtualAddress();
+        // Offset to the pass cbv.
+        int heapIndex = mPassCbvOffset + frameIndex;
+        auto handle = CD3DX12_CPU_DESCRIPTOR_HANDLE(mCbvHeap->GetCPUDescriptorHandleForHeapStart());
+        handle.Offset(heapIndex,mCbvSrvUavDescriptorSize);
+
+        D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
+        cbvDesc.BufferLocation = cbAddress;
+        cbvDesc.SizeInBytes = passCBByteSize;
+
+        md3dDevice->CreateConstantBufferView(&cbvDesc,handle);
+    }
 }
 
 void ShapesApp::BuildRootSignature()
 {
+    // 两个CBV ObjectCBV 和 PassCBV
     CD3DX12_DESCRIPTOR_RANGE cbvTable0;
     cbvTable0.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV,1,0);
 
@@ -496,6 +639,7 @@ void ShapesApp::BuildRenderItems()
     gridRitem->IndexCount = gridRitem->Geo->DrawArgs["grid"].IndexCount;
     gridRitem->StartIndexLocation = gridRitem->Geo->DrawArgs["grid"].StartIndexLocation;
     gridRitem->BaseVertexLocation = gridRitem->Geo->DrawArgs["grid"].BaseVertexLocation;
+    mAllRitems.push_back(std::move(gridRitem));
 
     UINT objCBIndex = 2;
     for(int i =0;i<5;++i)
@@ -558,6 +702,26 @@ void ShapesApp::BuildRenderItems()
 
 void ShapesApp::DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::vector<RenderItem*>& ritems)
 {
+    UINT objectCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
+    auto objectCB = mCurrentFrameResource->ObjectCB->Resource();
+
+    for(size_t i =0;i<ritems.size();++i)
+    {
+        auto ri = ritems[i];
+
+        cmdList->IASetVertexBuffers(0,1,&ri->Geo->VertexBufferView());
+        cmdList->IASetIndexBuffer(&ri->Geo->IndexBufferView());
+        cmdList->IASetPrimitiveTopology(ri->PrimitiveType);
+
+        // Offset to the CBV in the heap for this object
+        UINT cbvIndex = mCurrentFrameResourceIndex*(UINT)mOpaqueRitems.size() + ri->ObjCBIndex;
+        auto cbvHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(mCbvHeap->GetGPUDescriptorHandleForHeapStart());
+        cbvHandle.Offset(cbvIndex,mCbvSrvUavDescriptorSize);
+
+        cmdList->SetGraphicsRootDescriptorTable(0,cbvHandle);
+        cmdList->DrawIndexedInstanced(ri->IndexCount,1,ri->StartIndexLocation,ri->BaseVertexLocation,0);
+    }
+    
 }
 
 ShapesApp::ShapesApp(HINSTANCE hInstance)
