@@ -4,6 +4,9 @@
 
 #include "GeometryGenerator.h"
 #include <algorithm>
+#include <iostream>
+#include <fstream>
+#include <sstream>
 
 using namespace DirectX;
 
@@ -654,4 +657,98 @@ GeometryGenerator::MeshData GeometryGenerator::CreateQuad(float x, float y, floa
 	meshData.Indices32[5] = 3;
 
     return meshData;
+}
+
+GeometryGenerator::MeshData GeometryGenerator::LoadModel(std::string path)
+{
+	MeshData meshData;
+	std::ifstream myfile(path);
+	std::string line;
+	std::string tmp;
+
+	uint32 VertexCount  =0,IndexCount = 0;
+
+	bool bVertexList = false;
+	bool bIndexList = false;
+	bool bInLeftBrace = false;
+	bool bHasInit = false;
+	uint32 currentVertexIndex = 0;
+	uint32 currentInddexIndex = 0;
+	if(myfile.is_open())
+	{
+		while (getline(myfile,line))
+		{
+			std::stringstream ssline(line);
+			// std::cout<<line<<std::endl;
+			if(line.find("VertexCount:")!=std::string::npos)
+			{
+				ssline>>tmp>>VertexCount;
+			}
+			else if(line.find("TriangleCount:")!=std::string::npos)
+			{
+				// myfile>>tmp>>IndexCount;
+				// 读入的是Triangle的个数，所以乘3
+				ssline>>tmp>>(IndexCount);
+				IndexCount*=3;
+			}
+			else if(line.find("VertexList")!=std::string::npos)
+			{
+				bVertexList = true;
+				bIndexList = false;
+			}
+			else if(line.find("TriangleList")!=std::string::npos)
+			{
+				bVertexList = false;
+				bIndexList = true;
+			}
+			else if(line.find("{")!=std::string::npos)
+			{
+				bInLeftBrace = true;	
+			}
+			else if(line.find({"}"})!=std::string::npos)
+			{
+				if(bInLeftBrace)
+				{
+					bInLeftBrace = false;
+				}
+			}
+			else if(!bHasInit)
+			{
+				if(VertexCount!=0 && IndexCount !=0)
+				{
+					meshData.Vertices.resize(VertexCount);
+					meshData.Indices32.resize(IndexCount);
+					bHasInit=true;
+				}
+			}
+			// 解析顶点数据
+			else if(bHasInit&&bInLeftBrace)
+			{
+				if(bVertexList)
+				{
+					Vertex vertex;
+					ssline>>vertex.Position.x>>vertex.Position.y>>vertex.Position.z>>vertex.Normal.x>>vertex.Normal.y>>vertex.Normal.z;
+					meshData.Vertices[currentVertexIndex] = vertex;
+					currentVertexIndex++;
+				}
+				else if(bIndexList)
+				{
+					uint32 idx[3]={0};
+					ssline>>idx[0]>>idx[1]>>idx[2];
+					for(int i =0; i<3;++i)
+					{
+						meshData.Indices32[currentInddexIndex] = idx[i];
+						currentInddexIndex++;
+					}
+				
+				}
+			}
+			
+			
+		}
+		
+		myfile.close();
+	}
+	return meshData;
+	
 }

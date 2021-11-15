@@ -36,6 +36,11 @@ struct RenderItem
     int BaseVertexLocation = 0;
 };
 
+// Exercise 3.
+struct CustomModel
+{
+    
+};
 
 class ShapesApp : public D3DApp
 {
@@ -306,23 +311,7 @@ void ShapesApp::UpdateCamera(const GameTimer& gt)
 
 void ShapesApp::UpdateObjectCBs(const GameTimer& gt)
 {
-    auto currObjectCB = mCurrentFrameResource->ObjectCB.get();
-    for(auto& e:mAllRitems)
-    {
-        // Only update the cbuffer if the constants has changed.
-        // This needs to be tracked per frame resource.
-        if(e->NumFramesDirty>0)
-        {
-            XMMATRIX world = XMLoadFloat4x4(&e->World);
-            ObjectConstants objConstants;
-            XMStoreFloat4x4(&objConstants.World,XMMatrixTranspose(world));
-            currObjectCB->CopyData(e->ObjCBIndex,objConstants);
-
-            // Next frame resource need to be update too..
-            // 这个值相当于还要更新几次(Update没被GPU卡住前会一直跑).
-            e->NumFramesDirty--;
-        }
-    }
+   // Exercise 2 .在DrawRenderItem中做
 }
 
 void ShapesApp::UpdateMainPassCB(const GameTimer& gt)
@@ -427,9 +416,11 @@ void ShapesApp::BuildRootSignature()
     // Root Signature 是一组根参数，一个根参数可以是table，root descriptor or root constants.
     // 这里使用两个table
     CD3DX12_ROOT_PARAMETER slotRootParams[2];
-    slotRootParams[0].InitAsDescriptorTable(1,&cbvTable0);
+    // slotRootParams[0].InitAsDescriptorTable(1,&cbvTable0);
+    // slotRootParams[1].InitAsDescriptorTable(1,&cbvTable1);
+    // Exercise 2 这里不用表，改用根常量
+    slotRootParams[0].InitAsConstants(16,0);
     slotRootParams[1].InitAsDescriptorTable(1,&cbvTable1);
-
     // Create desc.
     CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc(2,slotRootParams,0,nullptr,D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
@@ -473,17 +464,23 @@ void ShapesApp::BuildShapeGeometry()
     // Exercise 1 end.
     GeometryGenerator::MeshData cylinder = geoGen.CreateCylinder(0.5f,0.3f,3.0f,20,20);
 
+    //Exercise 3
+    GeometryGenerator::MeshData model = geoGen.LoadModel("Models\\skull.txt");
+
     // Combine all the geometry into one big vertex/index buffer.
     UINT boxVertexOffset = 0 ;
     UINT gridVertexOffset = (UINT)box.Vertices.size();
     UINT sphereVertexOffset = gridVertexOffset + (UINT)grid.Vertices.size();
     UINT cylinderVertexOffset = sphereVertexOffset+(UINT)sphere.Vertices.size();
+    UINT modelVertexOffset = cylinderVertexOffset + (UINT)cylinder.Vertices.size();
 
     UINT boxIndexOffset = 0 ;
     UINT gridIndexOffset = (UINT)box.Indices32.size();
     UINT sphereIndexOffset = gridIndexOffset + (UINT)grid.Indices32.size();
     UINT cylinderIndexOffset = sphereIndexOffset+(UINT)sphere.Indices32.size();
+    UINT modelIndexOffset = cylinderIndexOffset + (UINT)cylinder.Indices32.size();
 
+    
     SubmeshGeometry boxSumMesh;
     boxSumMesh.IndexCount = (UINT)box.Indices32.size();
     boxSumMesh.StartIndexLocation = boxIndexOffset;
@@ -504,11 +501,18 @@ void ShapesApp::BuildShapeGeometry()
     cylinderSumMesh.StartIndexLocation = cylinderIndexOffset;
     cylinderSumMesh.BaseVertexLocation = cylinderVertexOffset;
 
+    SubmeshGeometry modelSubMesh;
+    modelSubMesh.IndexCount = (UINT)model.Indices32.size();
+    modelSubMesh.StartIndexLocation = modelIndexOffset;
+    modelSubMesh.BaseVertexLocation = modelVertexOffset;
+    
+
     auto totalVertexCount =
         box.Vertices.size() +
         grid.Vertices.size()+
         sphere.Vertices.size() +
-        cylinder.Vertices.size();
+        cylinder.Vertices.size() +
+        model.Vertices.size();
     std::vector<Vertex> vertices(totalVertexCount);
     UINT k = 0;
     for(size_t i =0;i<box.Vertices.size();++i,++k)
@@ -531,12 +535,18 @@ void ShapesApp::BuildShapeGeometry()
         vertices[k].Pos = cylinder.Vertices[i].Position;
         vertices[k].Color = XMFLOAT4(DirectX::Colors::SteelBlue);
     }
+    for(size_t i = 0;i<model.Vertices.size();++i,++k)
+    {
+        vertices[k].Pos = model.Vertices[i].Position;
+        vertices[k].Color = XMFLOAT4(DirectX::Colors::Red);
+    }
 
     std::vector<std::uint16_t> indices;
     indices.insert(indices.end(),box.GetIndices16().begin(),box.GetIndices16().end());
     indices.insert(indices.end(),grid.GetIndices16().begin(),grid.GetIndices16().end());
     indices.insert(indices.end(),sphere.GetIndices16().begin(),sphere.GetIndices16().end());
     indices.insert(indices.end(),cylinder.GetIndices16().begin(),cylinder.GetIndices16().end());
+    indices.insert(indices.end(),model.GetIndices16().begin(),model.GetIndices16().end());
 
     const UINT vbByteSize = (UINT) vertices.size()*sizeof(Vertex);
     const UINT ibByteSize = (UINT) indices.size() * sizeof(std::uint16_t);
@@ -575,6 +585,7 @@ void ShapesApp::BuildShapeGeometry()
     geo->DrawArgs["grid"] = gridSumMesh;
     geo->DrawArgs["sphere"] = sphereSumMesh;
     geo->DrawArgs["cylinder"] = cylinderSumMesh;
+    geo->DrawArgs["model"] = modelSubMesh;
 
     mGeometries[geo->Name] = std::move(geo);
 }
@@ -625,9 +636,21 @@ void ShapesApp::BuildFrameResources()
 
 void ShapesApp::BuildRenderItems()
 {
+    // 写入模型
+    auto modelRitem = std::make_unique<RenderItem>();
+    modelRitem->World = MathHelper::Identity4x4();
+    modelRitem->ObjCBIndex = 0 ;
+    modelRitem->Geo = mGeometries["shapeGeo"].get();
+    modelRitem->PrimitiveType = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    modelRitem->IndexCount = modelRitem->Geo->DrawArgs["model"].IndexCount;
+    modelRitem->StartIndexLocation = modelRitem->Geo->DrawArgs["model"].StartIndexLocation;
+    modelRitem->BaseVertexLocation = modelRitem->Geo->DrawArgs["model"].BaseVertexLocation;
+    mAllRitems.push_back(std::move(modelRitem));
+
+        
     auto boxRitem = std::make_unique<RenderItem>();
     XMStoreFloat4x4(&boxRitem->World,XMMatrixScaling(2.F,2.F,2.F)*XMMatrixTranslation(0.,0.5,0.));
-    boxRitem->ObjCBIndex = 0;
+    boxRitem->ObjCBIndex = 1;
     boxRitem->Geo = mGeometries["shapeGeo"].get();
     boxRitem->PrimitiveType = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
     boxRitem->IndexCount = boxRitem->Geo->DrawArgs["box"].IndexCount;
@@ -637,7 +660,7 @@ void ShapesApp::BuildRenderItems()
 
     auto gridRitem = std::make_unique<RenderItem>();
     gridRitem->World = MathHelper::Identity4x4();
-    gridRitem->ObjCBIndex = 1;
+    gridRitem->ObjCBIndex = 2;
     gridRitem->Geo = mGeometries["shapeGeo"].get();
     gridRitem->PrimitiveType = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
     gridRitem->IndexCount = gridRitem->Geo->DrawArgs["grid"].IndexCount;
@@ -698,6 +721,7 @@ void ShapesApp::BuildRenderItems()
         
     }
 
+
     for(auto& e: mAllRitems)
     {
         mOpaqueRitems.push_back(e.get());
@@ -718,11 +742,28 @@ void ShapesApp::DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::v
         cmdList->IASetPrimitiveTopology(ri->PrimitiveType);
 
         // Offset to the CBV in the heap for this object
-        UINT cbvIndex = mCurrentFrameResourceIndex*(UINT)mOpaqueRitems.size() + ri->ObjCBIndex;
-        auto cbvHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(mCbvHeap->GetGPUDescriptorHandleForHeapStart());
-        cbvHandle.Offset(cbvIndex,mCbvSrvUavDescriptorSize);
+        // UINT cbvIndex = mCurrentFrameResourceIndex*(UINT)mOpaqueRitems.size() + ri->ObjCBIndex;
+        // auto cbvHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(mCbvHeap->GetGPUDescriptorHandleForHeapStart());
+        // cbvHandle.Offset(cbvIndex,mCbvSrvUavDescriptorSize);
 
-        cmdList->SetGraphicsRootDescriptorTable(0,cbvHandle);
+     
+            // Only update the cbuffer if the constants has changed.
+            // This needs to be tracked per frame resource.
+           
+          
+        XMMATRIX world = XMLoadFloat4x4(&ri->World);
+        ObjectConstants objConstants;
+        XMStoreFloat4x4(&objConstants.World,XMMatrixTranspose(world));
+
+        // Exercise2 使用根常量，这里就不用ObjectCB了
+        // currObjectCB->CopyData(e->ObjCBIndex,objConstants);
+
+        cmdList->SetGraphicsRoot32BitConstants(0,16,&objConstants,0);
+        // Next frame resource need to be update too..
+        // 这个值相当于还要更新几次(Update没被GPU卡住前会一直跑).
+ 
+
+        // cmdList->SetGraphicsRootDescriptorTable(0,cbvHandle);
         cmdList->DrawIndexedInstanced(ri->IndexCount,1,ri->StartIndexLocation,ri->BaseVertexLocation,0);
     }
     
