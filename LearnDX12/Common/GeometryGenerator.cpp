@@ -712,15 +712,6 @@ GeometryGenerator::MeshData GeometryGenerator::LoadModel(std::string path)
 					bInLeftBrace = false;
 				}
 			}
-			else if(!bHasInit)
-			{
-				if(VertexCount!=0 && IndexCount !=0)
-				{
-					meshData.Vertices.resize(VertexCount);
-					meshData.Indices32.resize(IndexCount);
-					bHasInit=true;
-				}
-			}
 			// 解析顶点数据
 			else if(bHasInit&&bInLeftBrace)
 			{
@@ -743,8 +734,15 @@ GeometryGenerator::MeshData GeometryGenerator::LoadModel(std::string path)
 				
 				}
 			}
-			
-			
+			if(!bHasInit)
+			{
+				if(VertexCount!=0 && IndexCount !=0)
+				{
+					meshData.Vertices.resize(VertexCount);
+					meshData.Indices32.resize(IndexCount);
+					bHasInit=true;
+				}
+			}
 		}
 		
 		myfile.close();
