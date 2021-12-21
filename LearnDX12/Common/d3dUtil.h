@@ -14,6 +14,8 @@
 #include <algorithm>
 #include <stdint.h>
 #include <sstream>
+#include "d3dx12.h"
+
 
 #include <fstream>
 

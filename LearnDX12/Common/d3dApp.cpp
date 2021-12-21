@@ -206,6 +206,21 @@ void D3DApp::LogAdapters()
     }
 }
 
+D3D12_CPU_DESCRIPTOR_HANDLE D3DApp::CurrentBackBufferView() const
+{
+    // 根据偏移找到back buffer的rtv
+    return CD3DX12_CPU_DESCRIPTOR_HANDLE(
+        mRtvHeap->GetCPUDescriptorHandleForHeapStart(),
+        mCurrBackBuffer,
+        mRtvDescriptorSize
+    );
+}
+
+D3D12_CPU_DESCRIPTOR_HANDLE D3DApp::DepthStencilView() const
+{
+    return mDsvHeap->GetCPUDescriptorHandleForHeapStart();
+}
+
 bool D3DApp::InitMainWindow()
 {
     WNDCLASS wc;
@@ -262,6 +277,9 @@ bool D3DApp::InitDirect3D()
 #ifdef _DEBUG
     LogAdapters();
 #endif
+
+    
+    
     
     // 尝试创建硬件.nullptr表示使用默认设备
     HRESULT hardResult =  D3D12CreateDevice(
@@ -295,6 +313,8 @@ bool D3DApp::InitDirect3D()
     // CPU创建命令列表
     {
         md3dDevice->CreateCommandList(0,D3D12_COMMAND_LIST_TYPE_DIRECT,mDirectCmdListAlloc.Get(),nullptr,IID_PPV_ARGS(&mCommandList));
+        // 调用关闭。第一次引用命令列表时，要进行reset。reset要在关闭后才能执行。
+        mCommandList->Close();
     }
     
     // 创建Fence对象.用来同步.
@@ -305,6 +325,100 @@ bool D3DApp::InitDirect3D()
             IID_PPV_ARGS(&mFence)
         );
     }
+
+    // 获取描述符大小.不同GPU平台各异，但是获取一次即可。
+    {
+        mRtvDescriptorSize =   md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        mDsvDescriptorSize =  md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+        mCbvUavDescriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    }
+
+    // dxgi内容，创建交换链
+    {
+        // 释放之前的Swapchain，重新创建
+        mSwapChain.Reset();
+        DXGI_SWAP_CHAIN_DESC sd;
+
+        // 这里制定了rtv的格式。
+        sd.BufferDesc.Width = mClientWidth;
+        sd.BufferDesc.Height = mClientHeight;
+        sd.BufferDesc.RefreshRate.Numerator = 60;
+        sd.BufferDesc.RefreshRate.Denominator = 1;
+        sd.BufferDesc.Format = mBackBufferFormat;
+        sd.BufferDesc.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED;
+        sd.BufferDesc.Scaling = DXGI_MODE_SCALING_UNSPECIFIED;
+        // 4x msaa 配置.先填成固定值
+        sd.SampleDesc.Count = 4;
+        sd.SampleDesc.Quality = 1;
+
+        sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        sd.BufferCount = SwapChainBufferCount;
+        sd.OutputWindow = mhMainWnd;
+        sd.Windowed = true;
+        sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+        sd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+
+        // 交换链由通过命令队列直接管理
+        mdxgiFactory->CreateSwapChain(
+            mCommandQueue.Get(),
+            &sd,
+            mSwapChain.GetAddressOf()
+        );
+    }
+
+    // 创建描述符堆.
+    {
+        // 渲染目标视图需要的数目为交换链的数目.因为要交换
+        // 深度模板视图只需要一个.
+        // Cbv目前不需要
+
+        // rtv堆里只存储了2个rtv表舒服
+        D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc;
+        rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        rtvHeapDesc.NodeMask = 0;
+        rtvHeapDesc.NumDescriptors = SwapChainBufferCount;
+        md3dDevice->CreateDescriptorHeap(
+            &rtvHeapDesc,
+            IID_PPV_ARGS(mRtvHeap.GetAddressOf())
+        );
+
+        D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc;
+        dsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+        dsvHeapDesc.NodeMask = 0;
+        dsvHeapDesc.NumDescriptors = 1;
+        md3dDevice->CreateDescriptorHeap(
+            &dsvHeapDesc,
+            IID_PPV_ARGS(mDsvHeap.GetAddressOf())
+        );
+    }
+    
+    // 创建Buffer.
+    {
+        // Render target view.
+        CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(mRtvHeap->GetCPUDescriptorHandleForHeapStart());
+        for(UINT i=0;i<SwapChainBufferCount;++i)
+        {
+            mSwapChain->GetBuffer(
+                i,
+                IID_PPV_ARGS(&mSwapChainBuffer[i])
+            );
+
+            // 由于已经制定了后台缓冲区的格式，rtv的desc可以为nullptr.
+            md3dDevice->CreateRenderTargetView(
+                mSwapChainBuffer[i].Get(),
+                nullptr,
+                rtvHandle
+            );
+            rtvHandle.Offset(1,mRtvDescriptorSize);
+        }
+
+        // Depth/stencil view.
+        
+    }
+    
+
     
     
 }

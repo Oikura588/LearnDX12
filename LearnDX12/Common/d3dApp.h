@@ -52,6 +52,10 @@ public:
 
     // 打印显示设备
     void LogAdapters();
+
+    // 当前SwapChain中的back buffer view.(返回的是描述符)
+    D3D12_CPU_DESCRIPTOR_HANDLE CurrentBackBufferView() const;
+    D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilView() const;
 protected:
     bool InitMainWindow();
     bool InitDirect3D();
@@ -70,6 +74,12 @@ protected:
 
     // D3D 属性
     Microsoft::WRL::ComPtr<IDXGIFactory4> mdxgiFactory;             // dxgi工厂
+    Microsoft::WRL::ComPtr<IDXGISwapChain> mSwapChain;              // dxgi 交换链
+    DXGI_FORMAT mBackBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;     // dxgi Backbuffer format.
+    static const int SwapChainBufferCount = 2;                      // 交换链缓冲数
+    int mCurrBackBuffer = 0;
+    Microsoft::WRL::ComPtr<ID3D12Resource>  mSwapChainBuffer[SwapChainBufferCount];                    // 缓冲区资源.
+    Microsoft::WRL::ComPtr<ID3D12Resource>  mDepthStencilBuffer;    // ds buffer
     Microsoft::WRL::ComPtr<ID3D12Device> md3dDevice;                // d3d设备
     // 命令相关
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> mCommandQueue;       
@@ -77,6 +87,15 @@ protected:
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> mCommandList;
     Microsoft::WRL::ComPtr<ID3D12Fence> mFence;
     UINT64 mCurrentFence;   // 当前Fence值.
+
+    // 描述符大小
+    UINT mRtvDescriptorSize;
+    UINT mDsvDescriptorSize;
+    UINT mCbvUavDescriptorSize;
+
+    // 描述符堆
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> mRtvHeap;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> mDsvHeap;
 
     
 
