@@ -1,4 +1,4 @@
-﻿#include "d3dApp.h"
+#include "d3dApp.h"
 #include <WindowsX.h>
 
 using Microsoft::WRL::ComPtr;
@@ -51,14 +51,17 @@ HINSTANCE D3DApp::AppInst() const
 
 HWND D3DApp::MainWnd() const
 {
+    return mhMainWnd;
 }
 
 float D3DApp::AspectRatio() const
 {
+    return static_cast<float>(mClientHeight)/mClientWidth;
 }
 
 bool D3DApp::Get4xMsaaState() const
 {
+    return true;
 }
 
 void D3DApp::Set4xMsaaState(bool value)
@@ -67,6 +70,32 @@ void D3DApp::Set4xMsaaState(bool value)
 
 int D3DApp::Run()
 {
+    MSG msg = {0};
+    mTimer.Reset();
+    // 主循环
+    while(msg.message!=WM_QUIT)
+    {
+        if(PeekMessage(&msg,0,0,0,PM_REMOVE))
+        {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+        else
+        {
+            mTimer.Tick();
+            if(!mAppPaused)
+            {
+                Update(mTimer);
+                Draw(mTimer);
+            }
+            else
+            {
+                Sleep(100);
+            }
+        }
+    }
+    return (int)msg.wParam;
+    
 }
 
 bool D3DApp::Initialize()
@@ -198,6 +227,7 @@ void D3DApp::LogAdapters()
         text += L"\n";
         OutputDebugString(text.c_str());
         adapterList.push_back(adapter);
+        i++;
     }
 
     for(size_t i = 0;i<adapterList.size();++i)
@@ -206,7 +236,7 @@ void D3DApp::LogAdapters()
     }
 }
 
-D3D12_CPU_DESCRIPTOR_HANDLE D3DApp::CurrentBackBufferView() const
+D3D12_CPU_DESCRIPTOR_HANDLE D3DApp::CurrentBackBufferDescriptor() const
 {
     // 根据偏移找到back buffer的rtv
     return CD3DX12_CPU_DESCRIPTOR_HANDLE(
@@ -216,9 +246,14 @@ D3D12_CPU_DESCRIPTOR_HANDLE D3DApp::CurrentBackBufferView() const
     );
 }
 
-D3D12_CPU_DESCRIPTOR_HANDLE D3DApp::DepthStencilView() const
+D3D12_CPU_DESCRIPTOR_HANDLE D3DApp::DepthStencilDescriptor() const
 {
     return mDsvHeap->GetCPUDescriptorHandleForHeapStart();
+}
+
+ID3D12Resource* D3DApp::CurrentBackBuffer() const
+{
+    return mSwapChainBuffer[mCurrBackBuffer].Get();
 }
 
 bool D3DApp::InitMainWindow()
@@ -326,14 +361,11 @@ bool D3DApp::InitDirect3D()
         );
     }
 
-    // 获取描述符大小.不同GPU平台各异，但是获取一次即可。
-    {
-        mRtvDescriptorSize =   md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-        mDsvDescriptorSize =  md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
-        mCbvUavDescriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-    }
+    // 下面创建的内容需要先重置下CommandList来打开.
+    //mDirectCmdListAlloc.Reset();
+    mCommandList->Reset(mDirectCmdListAlloc.Get(),nullptr);
 
-    // dxgi内容，创建交换链
+    // dxgi内容，创建交换链。交换链依赖CommandQueue.
     {
         // 释放之前的Swapchain，重新创建
         mSwapChain.Reset();
@@ -348,22 +380,29 @@ bool D3DApp::InitDirect3D()
         sd.BufferDesc.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED;
         sd.BufferDesc.Scaling = DXGI_MODE_SCALING_UNSPECIFIED;
         // 4x msaa 配置.先填成固定值
-        sd.SampleDesc.Count = 4;
-        sd.SampleDesc.Quality = 1;
+        sd.SampleDesc.Count = 1;
+        sd.SampleDesc.Quality = 0;
 
         sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         sd.BufferCount = SwapChainBufferCount;
         sd.OutputWindow = mhMainWnd;
         sd.Windowed = true;
-        sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+        sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
         sd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
 
         // 交换链由通过命令队列直接管理
-        mdxgiFactory->CreateSwapChain(
+        ThrowIfFailed( mdxgiFactory->CreateSwapChain(
             mCommandQueue.Get(),
             &sd,
             mSwapChain.GetAddressOf()
-        );
+        ));
+    }
+
+    // 获取描述符大小.不同GPU平台各异，但是获取一次即可。
+    {
+        mRtvDescriptorSize =   md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        mDsvDescriptorSize =  md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+        mCbvUavDescriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     }
 
     // 创建描述符堆.
@@ -394,8 +433,13 @@ bool D3DApp::InitDirect3D()
         );
     }
     
-    // 创建Buffer.
+    // 创建BufferView.
     {
+        // 思考 为什么同样是view，RenderTargetView不需要resource，而dsv需要？
+        // 这里的view其实也是对resource的描述符
+        // 创建流程应该是现有资源然后创建描述符.
+        // 其中RenderTarget由于资源是Swapchain的Buffer，所以不需要pDesc就可以直接创建
+        // 而DepthStencil的buffer还没有资源，因此需要先创建资源再创建view.
         // Render target view.
         CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(mRtvHeap->GetCPUDescriptorHandleForHeapStart());
         for(UINT i=0;i<SwapChainBufferCount;++i)
@@ -414,13 +458,91 @@ bool D3DApp::InitDirect3D()
             rtvHandle.Offset(1,mRtvDescriptorSize);
         }
 
-        // Depth/stencil view.
-        
-    }
-    
+        // Depth/stencil buffer and view.
+        // DS Buffer是一种2D纹理
+        D3D12_RESOURCE_DESC dsDesc;
+        dsDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        dsDesc.Alignment = 0;
+        // Texture2D类型的width和height就是图像的高度和宽度
+        dsDesc.Width = mClientWidth;
+        dsDesc.Height = mClientHeight;
+        // 对于1D和2D来说，是纹理数组的大小。只有一张纹理，所以是1.
+        dsDesc.DepthOrArraySize = 1;
+        // 对于DepthStencil来说，只有一个Mip级别.
+        dsDesc.MipLevels = 1 ;
+        // D是指Depth,S是指Stencil.这里的意思是无符号24位深度缓冲区，并映射到[0,1]区间，8位uint分配给模板缓冲区.
+        dsDesc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;;
+        dsDesc.SampleDesc.Count = 1;
+        dsDesc.SampleDesc.Quality = 0;
+        // 暂时不处理.
+        dsDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        dsDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
 
-    
-    
+        // 根据描述创建GPU资源.Gpu资源都存在堆中.使用CreateCommittedResource.创建一个资源与一个堆，并上传到堆中.
+        // 深度缓冲区应该放到默认堆中，因为CPU不需要访问.
+        
+        // 创建资源时可以指定清除资源时的优化值.
+        D3D12_CLEAR_VALUE dsClearValue;
+        dsClearValue.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+        dsClearValue.DepthStencil.Depth = 1.0f;
+        dsClearValue.DepthStencil.Stencil = 0;
+
+        D3D12_HEAP_PROPERTIES dsHeapProperties;
+        dsHeapProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
+        dsHeapProperties.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+        dsHeapProperties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+        dsHeapProperties.VisibleNodeMask = 1;
+        dsHeapProperties.CreationNodeMask = 1;
+                
+        
+        md3dDevice->CreateCommittedResource(
+            &dsHeapProperties,
+            D3D12_HEAP_FLAG_NONE,
+            &dsDesc,
+            D3D12_RESOURCE_STATE_COMMON,
+            &dsClearValue,
+            IID_PPV_ARGS(mDepthStencilBuffer.GetAddressOf())
+        );
+
+        // Buffer创建好了，绑定Descriptor.
+        md3dDevice->CreateDepthStencilView(
+            mDepthStencilBuffer.Get(),
+            nullptr,
+            DepthStencilDescriptor()
+        );
+
+        // DSV 创建好后要从初始状态转成DepthWrite状态
+        // 思考，为什么创建的时候要指定成Common而不是Write？
+        // 这里还是mCommandList的第一条语句.
+        mCommandList->ResourceBarrier(
+            1,
+            &CD3DX12_RESOURCE_BARRIER::Transition(
+                mDepthStencilBuffer.Get(),
+                D3D12_RESOURCE_STATE_COMMON,
+                D3D12_RESOURCE_STATE_DEPTH_WRITE
+            )
+        );
+    }
+
+    // 设置视口和裁剪矩形
+    {
+        mScreenViewport.TopLeftX = 0;
+        mScreenViewport.TopLeftY = 0;
+        mScreenViewport.Width = mClientWidth;
+        mScreenViewport.Height = mClientHeight;
+        mScreenViewport.MinDepth = 0;
+        mScreenViewport.MaxDepth = 1;
+        mCommandList->RSSetViewports(1,&mScreenViewport);
+
+        mScissorRect = {0,0,mClientWidth,mClientHeight};
+        mCommandList->RSSetScissorRects(1,&mScissorRect);
+    }
+    mCommandList->Close();
+
+    ID3D12CommandList* cmdLists[] = {mCommandList.Get()};
+    mCommandQueue->ExecuteCommandLists(_countof(cmdLists),cmdLists);
+    FlushCommandQueue();
+    return true;
 }
 
 void D3DApp::FlushCommandQueue()

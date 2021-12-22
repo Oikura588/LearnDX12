@@ -44,8 +44,9 @@ void InitDirect3DApp::Update(const GameTimer& gt)
 void InitDirect3DApp::Draw(const GameTimer& gt)
 {
     // 重复使用记录命令相关内存
-    ThrowIfFailed(mDirectCmdListAlloc->Reset());
+    // 必须命令执行完成后才能reset.依赖同步机制
     // 通过ExecuteCommandList 将CmdList 加入Queue后，可以重置命令列表.
+    ThrowIfFailed(mDirectCmdListAlloc->Reset());
     ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(),nullptr));
     // 转换资源状态，把资源从present转为RT
     mCommandList->ResourceBarrier(
@@ -56,14 +57,11 @@ void InitDirect3DApp::Draw(const GameTimer& gt)
     // 设置视口和裁剪矩形，每次重置命令列表后需要重置.
     mCommandList->RSSetViewports(1,&mScreenViewport);
     mCommandList->RSSetScissorRects(1,&mScissorRect);
-
     // 清楚后台缓冲区和深度缓冲区.
-    mCommandList->ClearRenderTargetView(CurrentBackBufferView(),DirectX::Colors::LightBlue,0,nullptr);
-    mCommandList->ClearDepthStencilView(DepthStencilView(),D3D12_CLEAR_FLAG_DEPTH|D3D12_CLEAR_FLAG_STENCIL,1.0f,0,0,nullptr);
-
+    mCommandList->ClearRenderTargetView(CurrentBackBufferDescriptor(),DirectX::Colors::LightBlue,0,nullptr);
+    mCommandList->ClearDepthStencilView(DepthStencilDescriptor(),D3D12_CLEAR_FLAG_DEPTH|D3D12_CLEAR_FLAG_STENCIL,1.0f,0,0,nullptr);
     // 指定要渲染的缓冲区
-    mCommandList->OMSetRenderTargets(1,&CurrentBackBufferView(),true,&DepthStencilView());
-
+    mCommandList->OMSetRenderTargets(1,&CurrentBackBufferDescriptor(),true,&DepthStencilDescriptor());
     // 再次对资源转换，从RT转回Present
     mCommandList->ResourceBarrier(
         1,

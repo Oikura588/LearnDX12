@@ -54,8 +54,10 @@ public:
     void LogAdapters();
 
     // 当前SwapChain中的back buffer view.(返回的是描述符)
-    D3D12_CPU_DESCRIPTOR_HANDLE CurrentBackBufferView() const;
-    D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilView() const;
+    D3D12_CPU_DESCRIPTOR_HANDLE CurrentBackBufferDescriptor() const;
+    D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilDescriptor() const;
+
+    ID3D12Resource* CurrentBackBuffer() const;
 protected:
     bool InitMainWindow();
     bool InitDirect3D();
@@ -78,7 +80,7 @@ protected:
     DXGI_FORMAT mBackBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;     // dxgi Backbuffer format.
     static const int SwapChainBufferCount = 2;                      // 交换链缓冲数
     int mCurrBackBuffer = 0;
-    Microsoft::WRL::ComPtr<ID3D12Resource>  mSwapChainBuffer[SwapChainBufferCount];                    // 缓冲区资源.
+    Microsoft::WRL::ComPtr<ID3D12Resource>  mSwapChainBuffer[SwapChainBufferCount];      // RT buffer.
     Microsoft::WRL::ComPtr<ID3D12Resource>  mDepthStencilBuffer;    // ds buffer
     Microsoft::WRL::ComPtr<ID3D12Device> md3dDevice;                // d3d设备
     // 命令相关
@@ -97,7 +99,9 @@ protected:
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> mRtvHeap;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> mDsvHeap;
 
-    
+    // 视口和裁剪区域
+    D3D12_VIEWPORT      mScreenViewport;
+    D3D12_RECT          mScissorRect;
 
     int mClientWidth = 800;
     int mClientHeight = 600;
