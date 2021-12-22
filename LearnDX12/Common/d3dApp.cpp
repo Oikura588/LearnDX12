@@ -471,7 +471,7 @@ bool D3DApp::InitDirect3D()
         // 对于DepthStencil来说，只有一个Mip级别.
         dsDesc.MipLevels = 1 ;
         // D是指Depth,S是指Stencil.这里的意思是无符号24位深度缓冲区，并映射到[0,1]区间，8位uint分配给模板缓冲区.
-        dsDesc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;;
+        dsDesc.Format = mDepthStencilFormat;;
         dsDesc.SampleDesc.Count = 1;
         dsDesc.SampleDesc.Quality = 0;
         // 暂时不处理.
@@ -483,7 +483,7 @@ bool D3DApp::InitDirect3D()
         
         // 创建资源时可以指定清除资源时的优化值.
         D3D12_CLEAR_VALUE dsClearValue;
-        dsClearValue.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+        dsClearValue.Format = mDepthStencilFormat;
         dsClearValue.DepthStencil.Depth = 1.0f;
         dsClearValue.DepthStencil.Stencil = 0;
 

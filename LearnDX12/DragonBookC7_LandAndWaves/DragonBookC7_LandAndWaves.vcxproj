@@ -161,6 +161,7 @@
     <ClCompile Include="..\Common\GameTimer.cpp" />
     <ClCompile Include="..\Common\GeometryGenerator.cpp" />
     <ClCompile Include="..\Common\MathHelper.cpp" />
+    <ClCompile Include="..\Common\UploadBuffer.cpp" />
     <ClCompile Include="DragonBookC7_LandAndWaves.cpp" />
     <ClCompile Include="FrameResource.cpp" />
     <None Include="Shaders\color.hlsl">

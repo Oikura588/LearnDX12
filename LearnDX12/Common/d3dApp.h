@@ -82,7 +82,7 @@ protected:
     int mCurrBackBuffer = 0;
     Microsoft::WRL::ComPtr<ID3D12Resource>  mSwapChainBuffer[SwapChainBufferCount];      // RT buffer.
     Microsoft::WRL::ComPtr<ID3D12Resource>  mDepthStencilBuffer;    // ds buffer
-    Microsoft::WRL::ComPtr<ID3D12Device> md3dDevice;                // d3d设备
+    Microsoft::WRL::ComPtr<ID3D12Device> md3dDevice;                // d
     // 命令相关
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> mCommandQueue;       
     Microsoft::WRL::ComPtr<ID3D12CommandAllocator> mDirectCmdListAlloc;
@@ -111,6 +111,7 @@ protected:
     bool mResizing;
 
     bool m4xMsaaState;      // 切换4xMsaa状态
+    DXGI_FORMAT mDepthStencilFormat=DXGI_FORMAT_D24_UNORM_S8_UINT;    
     GameTimer mTimer;       // 计时器
     
     std::wstring mMainWndCaption = L"LearnDx12";  //Windows窗口标题

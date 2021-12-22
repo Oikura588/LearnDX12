@@ -430,8 +430,8 @@ void BoxApp::BuildPSO()
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     psoDesc.NumRenderTargets = 1;
     psoDesc.RTVFormats[0] = mBackBufferFormat;
-    psoDesc.SampleDesc.Count = m4xMsaaState?4:1;
-    psoDesc.SampleDesc.Quality = m4xMsaaQuality?(m4xMsaaQuality-1):0;
+    psoDesc.SampleDesc.Count = 1;
+    psoDesc.SampleDesc.Quality = 0;
     psoDesc.DSVFormat = mDepthStencilFormat ;
     ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
         &psoDesc,IID_PPV_ARGS(&mPSO)
