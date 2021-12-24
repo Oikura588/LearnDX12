@@ -37,26 +37,23 @@ private:
     virtual void OnMouseUp(WPARAM btnState, int x, int y) override;
     virtual void OnMouseMove(WPARAM btnState, int x, int y) override;
 
-    void BuildDescriptorHeap();
-    void BuildConstantBuffer();
-    void BuildRootSignature();
-    void BuildShadersAndInputLayout();
-    void BuildBoxGeometry();
-    void BuildPSO();
-
 private:
     ComPtr<ID3D12RootSignature> mRootSignature  = nullptr;
     ComPtr<ID3D12DescriptorHeap> mCbvHeap       = nullptr;
 
+    // UploadBuffer在创建好后可以方便地每帧更新来修改数据.
     std::unique_ptr<UploadBuffer<ObjectConstants>> mObjectCB = nullptr;
+    // MeshGeometry中包含了顶点、索引的buffer及view，方便管理几何体.
     std::unique_ptr<MeshGeometry> mBoxGeo =nullptr;
+    std::vector<D3D12_INPUT_ELEMENT_DESC> mInputLayout;
     // Shaders.
     ComPtr<ID3DBlob> mvsByteCode = nullptr;
     ComPtr<ID3DBlob> mpsBytecode = nullptr;
 
-    std::vector<D3D12_INPUT_ELEMENT_DESC> mInputLayout;
+    // Pipeline state object.
     ComPtr<ID3D12PipelineState> mPSO = nullptr;
 
+    // 单个物体的常量缓冲区.
     XMFLOAT4X4 mWorld = MathHelper::Identity4x4();
     XMFLOAT4X4 mView = MathHelper::Identity4x4();
     XMFLOAT4X4 mProj = MathHelper::Identity4x4();
@@ -79,22 +76,177 @@ BoxApp::~BoxApp()
 
 bool BoxApp::Initialize()
 {
+    // 初始化d3d,主要包括交换链、rtv、dsv
     if(!D3DApp::Initialize())
     {
         return false;
     }
     // 重置命令列表来执行初始化命令
     ThrowIfFailed( mCommandList->Reset(mDirectCmdListAlloc.Get(),nullptr));
+    // 初始化.
+    // 创建常量缓冲区堆
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC heapDesc;
+        heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        // 目前仅有一个描述符，即单个box物体的常量缓冲区的描述符.
+        heapDesc.NumDescriptors=1;
+        // Shader可见，因为需要读取
+        heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        heapDesc.NodeMask = 0;
 
-    // 初始化中创建了RTV和DSV的，这里创建CBV.
-    BuildDescriptorHeap();
-    // 创建完heap后创建真正的view.
-    BuildConstantBuffer();
-    BuildRootSignature();
-    BuildShadersAndInputLayout();
-    BuildBoxGeometry();
-    BuildPSO();
+        md3dDevice->CreateDescriptorHeap(
+            &heapDesc,
+            IID_PPV_ARGS(mCbvHeap.GetAddressOf())
+        );
+    }
+    
+    // 初始化常量缓冲区以及View.
+    {
+        // 常量缓冲区是Upload类型，可以使用辅助函数来创建.
+        mObjectCB = std::make_unique<UploadBuffer<ObjectConstants>>(md3dDevice.Get(),1,true);
 
+        D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
+        cbvDesc.BufferLocation = mObjectCB->Resource()->GetGPUVirtualAddress();
+        cbvDesc.SizeInBytes = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
+
+        // 思考，哪里需要CPU描述符，哪里需要gpu描述符?
+        // View的地址就是CBV heap的start，因为只有一个.
+        md3dDevice->CreateConstantBufferView(
+            &cbvDesc,
+            mCbvHeap->GetCPUDescriptorHandleForHeapStart()
+        );
+    }
+    
+    // 初始化RootSignature，把常量缓冲区绑定到GPU上供Shader读取.
+    // 把着色器当作一个函数，root signature就是函数签名，资源是参数数据.
+    {
+        // root signature -> root parameter -> type/table -> range.
+        D3D12_DESCRIPTOR_RANGE descRange;
+        descRange.NumDescriptors = 1;
+        descRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+        
+        D3D12_ROOT_DESCRIPTOR_TABLE  rootDescTable;
+        rootDescTable.pDescriptorRanges = &descRange;
+        rootDescTable.NumDescriptorRanges = 1;
+        
+        D3D12_ROOT_PARAMETER slotRootParameter[1];
+        slotRootParameter[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        slotRootParameter[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        slotRootParameter[0].DescriptorTable = rootDescTable;
+        
+        
+        // 创建RootSignature.要使用Blob
+        // d3d12规定，必须将根签名的描述布局进行序列化，才可以传入CreateRootSignature方法.
+        ComPtr<ID3DBlob> serializedBlob = nullptr,errBlob = nullptr;
+        
+        D3D12_ROOT_SIGNATURE_DESC rootSignatureDesc;
+        rootSignatureDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+        rootSignatureDesc.NumParameters = 1;
+        rootSignatureDesc.pParameters = slotRootParameter;
+        rootSignatureDesc.pStaticSamplers = nullptr;
+        rootSignatureDesc.NumStaticSamplers = 0;
+        
+        HRESULT hr =  D3D12SerializeRootSignature(&rootSignatureDesc,D3D_ROOT_SIGNATURE_VERSION_1,serializedBlob.GetAddressOf(),errBlob.GetAddressOf());
+        md3dDevice->CreateRootSignature(
+            0,
+            serializedBlob->GetBufferPointer(),
+            serializedBlob->GetBufferSize(),
+            IID_PPV_ARGS(mRootSignature.GetAddressOf())
+        );
+
+
+        // 绘制时调用的逻辑，设置根签名以及使用的描述符资源，本例中使用描述符表。描述符表存在描述符堆中.
+        mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
+        // 使用描述符表，要设置描述符堆以及
+        ID3D12DescriptorHeap* descriptorHeap[] = {mCbvHeap.Get()};
+        mCommandList->SetDescriptorHeaps(_countof(descriptorHeap),descriptorHeap);
+        // 偏移到此次绘制调用的CBV处(因为用一个大的堆来存储所有物体的常量缓冲区.)
+        D3D12_GPU_DESCRIPTOR_HANDLE cbv = mCbvHeap->GetGPUDescriptorHandleForHeapStart();
+        
+        mCommandList->SetGraphicsRootDescriptorTable(
+            0,
+            cbv
+        );
+    }
+
+    // 编译着色器.
+    {
+       
+        std::wstring filename;
+        std::string entrypoint,target;
+        UINT compileFlags = 0;
+#if defined(DEBUG)|defined(_DEBUG)
+        compileFlags =  D3DCOMPILE_DEBUG|D3DCOMPILE_SKIP_OPTIMIZATION;
+#endif
+        HRESULT hr = S_OK;
+        ComPtr<ID3DBlob> errorCode = nullptr;
+        
+        // 编译vs
+        filename = L"Shaders\\color.hlsl";
+        entrypoint = "VS";
+        target = "vs_5_0";
+        
+        hr = D3DCompileFromFile(
+            filename.c_str(),
+            nullptr,
+            D3D_COMPILE_STANDARD_FILE_INCLUDE,
+            entrypoint.c_str(),
+            target.c_str(),
+            compileFlags,
+            0,
+            &mvsByteCode,
+            &errorCode
+        );
+        if(errorCode!=nullptr)
+        {
+            OutputDebugStringA((char*)errorCode->GetBufferPointer());
+        }
+        ThrowIfFailed(hr);
+
+        errorCode = nullptr;
+        hr = S_OK;
+        // 编译ps.
+        filename = L"Shaders\\color.hlsl";
+        entrypoint = "PS";
+        target = "ps_5_0";
+        hr = D3DCompileFromFile(
+          filename.c_str(),
+          nullptr,
+          D3D_COMPILE_STANDARD_FILE_INCLUDE,
+          entrypoint.c_str(),
+          target.c_str(),
+          compileFlags,
+          0,
+          &mpsBytecode,
+          &errorCode
+      );
+        if(errorCode!=nullptr)
+        {
+            OutputDebugStringA((char*)errorCode->GetBufferPointer());
+        }
+        ThrowIfFailed(hr);
+    }
+
+    // 光栅化状态
+    {
+        D3D12_RASTERIZER_DESC rasterizerDesc;
+        rasterizerDesc.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+
+        // 关闭剔除，剔除正面，剔除背面
+        rasterizerDesc.CullMode = D3D12_CULL_MODE_NONE;
+        rasterizerDesc.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
+        // 渲染模式，是否启用线框模式渲染.
+        rasterizerDesc.FillMode = D3D12_FILL_MODE_SOLID;
+        rasterizerDesc.MultisampleEnable = FALSE;
+        rasterizerDesc.FrontCounterClockwise = FALSE;
+        rasterizerDesc.AntialiasedLineEnable = FALSE;
+        rasterizerDesc.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
+        rasterizerDesc.DepthClipEnable = TRUE;
+        rasterizerDesc.ForcedSampleCount = 0;
+        rasterizerDesc.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
+
+    }
+    
     // 执行初始化命令
     mCommandList->Close();
     ID3D12CommandList* cmdLists[] = {mCommandList.Get()};
@@ -240,203 +392,6 @@ void BoxApp::OnMouseMove(WPARAM btnState, int x, int y)
     mLastMousePos.y = y;
 }
 
-void BoxApp::BuildDescriptorHeap()
-{
-    D3D12_DESCRIPTOR_HEAP_DESC cbvHeapDesc;
-    cbvHeapDesc.NodeMask = 0;
-    cbvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    cbvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    cbvHeapDesc.NumDescriptors = 1;
-    ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&cbvHeapDesc,IID_PPV_ARGS(&mCbvHeap)));
-}
-
-void BoxApp::BuildConstantBuffer()
-{
-    mObjectCB = std::make_unique<UploadBuffer<ObjectConstants>>(md3dDevice.Get(),1,true);
-    UINT objCBBytesize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
-
-    D3D12_GPU_VIRTUAL_ADDRESS cbAddress = mObjectCB->Resource()->GetGPUVirtualAddress();
-    // 偏移到常量缓冲区中第i个物体对应的常量数据.这里取i=0
-    int boxCBufIdx = 0;
-    cbAddress+=boxCBufIdx*objCBBytesize;
-
-    D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
-    cbvDesc.BufferLocation = cbAddress;
-    cbvDesc.SizeInBytes = objCBBytesize;
-    md3dDevice->CreateConstantBufferView(
-        &cbvDesc,
-        mCbvHeap->GetCPUDescriptorHandleForHeapStart()
-    );
-}
-
-void BoxApp::BuildRootSignature()
-{
-    // Shader需要的具体资源（cb,tex等）
-    CD3DX12_ROOT_PARAMETER slotRootParam[1];
-    // 由一组RootParams所定义
-    // RootParams可以由 RootConstant/RootDescriptor/DescriptorTable表示.
-    // 描述符表是指描述符堆中表示描述符的一段连续区域.
-
-    // 只有一个cbv的描述符表
-    CD3DX12_DESCRIPTOR_RANGE cbvTable;
-    cbvTable.Init(
-        D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
-        1,
-        0
-    );
-    slotRootParam[0].InitAsDescriptorTable(
-        1,
-        &cbvTable
-    );
-    // 根签名由一组参数组成
-    CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(
-        1,
-        slotRootParam,
-        0,
-        nullptr,
-        D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
-    );
-    ComPtr<ID3DBlob> serializedRootSig = nullptr;
-    ComPtr<ID3DBlob> errorBlob = nullptr;
-    // 创建仅包含一个slot的根签名
-    HRESULT hr = D3D12SerializeRootSignature(
-        &rootSigDesc,
-        D3D_ROOT_SIGNATURE_VERSION_1,
-        serializedRootSig.GetAddressOf(),
-        errorBlob.GetAddressOf()
-    );
-    if(errorBlob!=nullptr)
-    {
-        ::OutputDebugStringA((char*)errorBlob->GetBufferPointer());
-    }
-    ThrowIfFailed(hr);
-    ThrowIfFailed( md3dDevice->CreateRootSignature(
-        0,
-        serializedRootSig->GetBufferPointer(),
-        serializedRootSig->GetBufferSize(),
-        IID_PPV_ARGS(&mRootSignature)
-    ));
-
-    
-}
-
-void BoxApp::BuildShadersAndInputLayout()
-{
-    HRESULT hr = S_OK;
-    mvsByteCode = d3dUtil::CompileShader(L"Shaders\\color.hlsl",nullptr,"VS","vs_5_0");
-    mpsBytecode = d3dUtil::CompileShader(L"Shaders\\color.hlsl",nullptr,"PS","ps_5_0");
-    // mInputLayout = {
-    //     {"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0,0,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0 },
-    //     {"COLOR",0,DXGI_FORMAT_R32G32B32A32_FLOAT,0,12,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0 },
-    // };
-    mInputLayout =
-    {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-{ "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
-    };
-}
-
-void BoxApp::BuildBoxGeometry()
-{
-    std::array<Vertex,8> vertices =
-    {
-        Vertex({XMFLOAT3(-1.0F,-1.0F,-1.0F),XMFLOAT4(Colors::White)}),
-        Vertex({XMFLOAT3(-1.0F,+1.0F,-1.0F),XMFLOAT4(Colors::Black)}),
-        Vertex({XMFLOAT3(+1.0F,+1.0F,-1.0F),XMFLOAT4(Colors::Red)}),
-        Vertex({XMFLOAT3(+1.0F,-1.0F,-1.0F),XMFLOAT4(Colors::Green)}),
-        Vertex({XMFLOAT3(-1.0F,-1.0F,+1.0F),XMFLOAT4(Colors::Blue)}),
-        Vertex({XMFLOAT3(-1.0F,+1.0F,+1.0F),XMFLOAT4(Colors::Yellow)}),
-        Vertex({XMFLOAT3(+1.0F,+1.0F,+1.0F),XMFLOAT4(Colors::Cyan)}),
-        Vertex({XMFLOAT3(+1.0F,-1.0F,+1.0F),XMFLOAT4(Colors::Magenta)}),
-    };
-
-    std::array<std::uint16_t,36> indices =
-    {
-        0,1,2,
-        0,2,3,
-        4,6,5,
-        4,7,6,
-        4,5,1,
-        4,1,0,
-        3,2,6,
-        3,6,7,
-        1,5,6,
-        1,6,2,
-        4,0,3,
-        4,3,7
-    };
-
-    const UINT vbByteSize = (UINT)vertices.size()*sizeof(Vertex);
-    const UINT ibByteSize = (UINT)indices.size()*sizeof(std::uint16_t);
-
-    mBoxGeo = std::make_unique<MeshGeometry>();
-    mBoxGeo->Name = "BoxGeo";
-
-    // vertex buffer.
-    ThrowIfFailed( D3DCreateBlob(vbByteSize,&(mBoxGeo->VertexBufferCPU)));
-    CopyMemory(mBoxGeo->VertexBufferCPU->GetBufferPointer(),vertices.data(),vbByteSize);
-
-    ThrowIfFailed( D3DCreateBlob(ibByteSize,&(mBoxGeo->IndexBufferCPU)));
-    CopyMemory(mBoxGeo->IndexBufferCPU->GetBufferPointer(),indices.data(),ibByteSize);
-
-    mBoxGeo->VertexBufferGPU = d3dUtil::CreateDefaultBuffer(
-        md3dDevice.Get(),
-        mCommandList.Get(),
-        vertices.data(),
-        vbByteSize,
-        mBoxGeo->VertexBufferUploader
-    );
-    
-    mBoxGeo->IndexBufferGPU = d3dUtil::CreateDefaultBuffer(
-        md3dDevice.Get(),
-        mCommandList.Get(),
-        indices.data(),
-        ibByteSize,
-        mBoxGeo->IndexBufferUploader
-    );
-
-    mBoxGeo->VertexByteStride = sizeof(Vertex);
-    mBoxGeo->VertexBufferByteSize = vbByteSize;
-    mBoxGeo->IndexFormat = DXGI_FORMAT_R16_UINT;
-    mBoxGeo->IndexBufferByteSize = ibByteSize;
-
-    SubmeshGeometry submesh;
-    submesh.IndexCount = (UINT) indices.size();
-    submesh.StartIndexLocation = 0;
-    submesh.BaseVertexLocation = 0;
-
-    mBoxGeo->DrawArgs["box"] = submesh; 
-}
-
-void BoxApp::BuildPSO()
-{
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
-    ZeroMemory(&psoDesc, sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
-    psoDesc.InputLayout = {mInputLayout.data(),(UINT)mInputLayout.size()};
-    psoDesc.pRootSignature = mRootSignature.Get();
-
-    psoDesc.VS = {
-        reinterpret_cast<BYTE*>(mvsByteCode->GetBufferPointer()),
-        mvsByteCode->GetBufferSize()
-    };
-    psoDesc.PS = {
-        reinterpret_cast<BYTE*>(mpsBytecode->GetBufferPointer()),
-        mpsBytecode->GetBufferSize()
-    };
-    psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-    psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-    psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
-    psoDesc.SampleMask = UINT_MAX;
-    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    psoDesc.NumRenderTargets = 1;
-    psoDesc.RTVFormats[0] = mBackBufferFormat;
-    psoDesc.SampleDesc.Count = 1;
-    psoDesc.SampleDesc.Quality = 0;
-    psoDesc.DSVFormat = mDepthStencilFormat ;
-    ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
-        &psoDesc,IID_PPV_ARGS(&mPSO)
-    ));
-}
 
 int WINAPI WinMain(HINSTANCE hInstance,HINSTANCE prevInstance,PSTR cmdLine,int showCmd)
 {
