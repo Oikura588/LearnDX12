@@ -1,3 +1,5 @@
+#include <array>
+
 #include "../Common/d3dApp.h"
 #include "../Common/MathHelper.h"
 #include "../Common/UploadBuffer.h"
@@ -94,10 +96,10 @@ bool BoxApp::Initialize()
         heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         heapDesc.NodeMask = 0;
 
-        md3dDevice->CreateDescriptorHeap(
+        ThrowIfFailed( md3dDevice->CreateDescriptorHeap(
             &heapDesc,
             IID_PPV_ARGS(mCbvHeap.GetAddressOf())
-        );
+        ));
     }
     
     // 初始化常量缓冲区以及View.
@@ -124,6 +126,12 @@ bool BoxApp::Initialize()
         D3D12_DESCRIPTOR_RANGE descRange;
         descRange.NumDescriptors = 1;
         descRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+        // 思考，这里是指r(0)吗？
+        // 这里必须知名base shader register，否则会导致和shader不匹配.
+        descRange.BaseShaderRegister = 0;
+        descRange.RegisterSpace = 0;
+        descRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+        
         
         D3D12_ROOT_DESCRIPTOR_TABLE  rootDescTable;
         rootDescTable.pDescriptorRanges = &descRange;
@@ -153,6 +161,7 @@ bool BoxApp::Initialize()
             serializedBlob->GetBufferSize(),
             IID_PPV_ARGS(mRootSignature.GetAddressOf())
         );
+        ThrowIfFailed(hr);
 
 
         // 绘制时调用的逻辑，设置根签名以及使用的描述符资源，本例中使用描述符表。描述符表存在描述符堆中.
@@ -226,9 +235,29 @@ bool BoxApp::Initialize()
         }
         ThrowIfFailed(hr);
     }
-
-    // 光栅化状态
+    // 输入布局
     {
+        mInputLayout = {
+            {"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0,0,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0,},
+            {"COLOR",0,DXGI_FORMAT_R32G32B32A32_FLOAT,0,12,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0}
+        };
+    }
+
+    // PSO
+    {
+        // BlendState.
+        D3D12_BLEND_DESC blendDesc;
+        blendDesc.AlphaToCoverageEnable = false;
+        blendDesc.IndependentBlendEnable = false;
+        D3D12_RENDER_TARGET_BLEND_DESC rtDesc={false,false,D3D12_BLEND_ONE,D3D12_BLEND_ZERO,D3D12_BLEND_OP_ADD,D3D12_BLEND_ONE,D3D12_BLEND_ZERO,D3D12_BLEND_OP_ADD,D3D12_LOGIC_OP_NOOP,D3D12_COLOR_WRITE_ENABLE_ALL};
+        
+        for(int i =0;i<D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT;++i)
+        {
+            blendDesc.RenderTarget[i]=rtDesc;
+        }
+
+        
+        // 光栅化状态
         D3D12_RASTERIZER_DESC rasterizerDesc;
         rasterizerDesc.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
 
@@ -245,6 +274,293 @@ bool BoxApp::Initialize()
         rasterizerDesc.ForcedSampleCount = 0;
         rasterizerDesc.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
 
+        // DepthStencilState.
+        D3D12_DEPTH_STENCIL_DESC dsDesc;
+        dsDesc.DepthEnable = true;
+        dsDesc.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+        dsDesc.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+        dsDesc.StencilEnable = false;
+        dsDesc.StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
+        dsDesc.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
+
+        const D3D12_DEPTH_STENCILOP_DESC dsopDesc = {
+            D3D12_STENCIL_OP_KEEP,
+            D3D12_STENCIL_OP_KEEP,
+            D3D12_STENCIL_OP_KEEP,
+            D3D12_COMPARISON_FUNC_ALWAYS
+        };
+        dsDesc.FrontFace = dsopDesc;
+        dsDesc.BackFace = dsopDesc;
+        
+
+        
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC pipelineStateDesc;
+        ZeroMemory(&pipelineStateDesc,sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
+        pipelineStateDesc.pRootSignature = mRootSignature.Get();
+
+        // 把blob转为Shader bytecode.
+        pipelineStateDesc.VS  =
+            {
+            reinterpret_cast<BYTE*>(mvsByteCode->GetBufferPointer()),mvsByteCode->GetBufferSize()
+            };
+        pipelineStateDesc.PS =
+            {
+            reinterpret_cast<BYTE*>(mpsBytecode->GetBufferPointer()),mpsBytecode->GetBufferSize()
+            };
+        pipelineStateDesc.BlendState = blendDesc;
+        // 一般全部开启.
+        pipelineStateDesc.SampleMask = UINT_MAX;
+        pipelineStateDesc.RasterizerState = rasterizerDesc;
+        pipelineStateDesc.DepthStencilState = dsDesc;
+        pipelineStateDesc.InputLayout = {mInputLayout.data(),(UINT)mInputLayout.size()};
+        pipelineStateDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        pipelineStateDesc.NumRenderTargets = 1;
+        pipelineStateDesc.RTVFormats[0] = mBackBufferFormat;
+        pipelineStateDesc.DSVFormat = mDepthStencilFormat;
+        pipelineStateDesc.SampleDesc.Count = 1;
+        pipelineStateDesc.SampleDesc.Quality = 0;
+
+        ThrowIfFailed( md3dDevice->CreateGraphicsPipelineState(
+            &pipelineStateDesc,IID_PPV_ARGS(&mPSO)
+        ));
+        
+        
+    }
+
+    // Build Geometry.和渲染没什么关系了，就是创建buffer并保存起来，绘制的时候用
+    {
+        std::array<Vertex,8> vertices = {
+            Vertex({ XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT4(Colors::White) }),
+           Vertex({ XMFLOAT3(-1.0f, +1.0f, -1.0f), XMFLOAT4(Colors::Black) }),
+           Vertex({ XMFLOAT3(+1.0f, +1.0f, -1.0f), XMFLOAT4(Colors::Red) }),
+           Vertex({ XMFLOAT3(+1.0f, -1.0f, -1.0f), XMFLOAT4(Colors::Green) }),
+           Vertex({ XMFLOAT3(-1.0f, -1.0f, +1.0f), XMFLOAT4(Colors::Blue) }),
+           Vertex({ XMFLOAT3(-1.0f, +1.0f, +1.0f), XMFLOAT4(Colors::Yellow) }),
+           Vertex({ XMFLOAT3(+1.0f, +1.0f, +1.0f), XMFLOAT4(Colors::Cyan) }),
+           Vertex({ XMFLOAT3(+1.0f, -1.0f, +1.0f), XMFLOAT4(Colors::Magenta) })
+        };
+        std::array<std::uint16_t,36> indices = {
+            0,1,2,
+            0,2,3,
+
+            4,6,5,
+            4,7,6,
+
+            4,5,1,
+            4,1,0,
+
+            3,2,6,
+            3,6,7,
+
+            1,5,6,
+            1,6,2,
+
+            4,0,3,
+            4,3,7
+        };
+        // 创建一个几何体.
+        mBoxGeo = std::make_unique<MeshGeometry>();
+        mBoxGeo->Name = "Box";
+
+        UINT vbByteSize = vertices.size()*sizeof(Vertex);
+        UINT ibByteSize= indices.size()*sizeof(std::uint16_t);
+        mBoxGeo->VertexByteStride = sizeof(Vertex);
+        mBoxGeo->VertexBufferByteSize = vbByteSize;
+        mBoxGeo->IndexFormat = DXGI_FORMAT_R16_UINT;
+        mBoxGeo->IndexBufferByteSize = ibByteSize;
+        SubmeshGeometry submesh;
+        submesh.IndexCount = indices.size();
+        submesh.BaseVertexLocation = 0;
+        submesh.StartIndexLocation = 0;
+        mBoxGeo->DrawArgs["box"]=submesh;
+
+        // 创建顶点缓冲区.
+
+        // 创建默认缓冲区资源.
+        D3D12_HEAP_PROPERTIES defaultBufferProperties;
+        defaultBufferProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
+        defaultBufferProperties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+        defaultBufferProperties.MemoryPoolPreference=D3D12_MEMORY_POOL_UNKNOWN;
+        defaultBufferProperties.CreationNodeMask = 1;
+        defaultBufferProperties.VisibleNodeMask = 1;
+        D3D12_RESOURCE_DESC vbDesc;
+        vbDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+        vbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        vbDesc.Alignment = 0;
+        vbDesc.Format = DXGI_FORMAT_UNKNOWN;
+        vbDesc.Height = 1;
+        vbDesc.Width = vbByteSize;
+        vbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        vbDesc.MipLevels = 1;
+        vbDesc.SampleDesc.Count=1;
+        vbDesc.SampleDesc.Quality=0;
+        vbDesc.DepthOrArraySize=1;
+        D3D12_RESOURCE_DESC ibDesc = vbDesc;
+        ibDesc.Width = ibByteSize;
+
+        // VB
+        md3dDevice->CreateCommittedResource(
+            &defaultBufferProperties,
+            D3D12_HEAP_FLAG_NONE,
+            &vbDesc,
+            D3D12_RESOURCE_STATE_COMMON,
+            nullptr,
+            IID_PPV_ARGS(mBoxGeo->VertexBufferGPU.GetAddressOf())  
+        );
+        // IB
+        md3dDevice->CreateCommittedResource(
+            &defaultBufferProperties,
+            D3D12_HEAP_FLAG_NONE,
+            &ibDesc,
+            D3D12_RESOURCE_STATE_COMMON,
+            nullptr,
+            IID_PPV_ARGS(mBoxGeo->IndexBufferGPU.GetAddressOf())
+        );
+        // 创建作为中介的上传缓冲区.
+        defaultBufferProperties.Type = D3D12_HEAP_TYPE_UPLOAD;
+        
+        md3dDevice->CreateCommittedResource(
+            &defaultBufferProperties,
+            D3D12_HEAP_FLAG_NONE,
+            &vbDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(mBoxGeo->VertexBufferUploader.GetAddressOf())
+        );
+        md3dDevice->CreateCommittedResource(
+            &defaultBufferProperties,
+            D3D12_HEAP_FLAG_NONE,
+            &ibDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(mBoxGeo->IndexBufferUploader.GetAddressOf())
+        );
+
+
+        // 把默认的buffer改成写入状态来复制.
+        mCommandList->ResourceBarrier(
+            1,
+            &CD3DX12_RESOURCE_BARRIER::Transition(
+                mBoxGeo->VertexBufferGPU.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_COPY_DEST
+            )
+        );
+        mCommandList->ResourceBarrier(
+         1,
+         &CD3DX12_RESOURCE_BARRIER::Transition(
+             mBoxGeo->IndexBufferGPU.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_COPY_DEST
+         )
+         );
+
+
+        
+        // 把数据拷贝到上传缓冲区.使用Subresource.
+        // 涉及到的调用:
+        // ID3D12Device::GetCopyableFootprints.
+        // UploaderBuffer::Map
+        // memcpy()?
+        // 思考，这里为什么不直接memcpy整个vertexbuffer，而是用subresource来处理.
+
+        BYTE* pData;
+        
+        HRESULT hr = mBoxGeo->VertexBufferUploader->Map(0,nullptr,reinterpret_cast<void**>(&pData));
+        ThrowIfFailed(hr);
+        UINT64 SrcOffset = 0;
+        UINT64 NumBytes = 0;
+
+        bool bUseSubresource = false;
+        if(bUseSubresource)
+        {
+            // 使用Subresource 进行map
+            D3D12_SUBRESOURCE_DATA subResourceData = {};
+            subResourceData.pData = vertices.data();
+            // 对buffer来说，这两个参数都是buffer的size
+            subResourceData.RowPitch = vbByteSize;
+            subResourceData.SlicePitch = vbByteSize;
+            UINT64 RequiredSize = 0;
+            D3D12_PLACED_SUBRESOURCE_FOOTPRINT Layouts[1];
+            UINT NumRows[1];
+            UINT64 RowSizeInBytes[1];
+            D3D12_RESOURCE_DESC Desc = mBoxGeo->VertexBufferGPU.Get()->GetDesc();
+            md3dDevice->GetCopyableFootprints(&Desc, 0, 1, 0, Layouts, NumRows, RowSizeInBytes, &RequiredSize);
+            SrcOffset = Layouts[0].Offset;
+            NumBytes = Layouts[0].Footprint.Width;
+            D3D12_MEMCPY_DEST DestData = {
+                pData + Layouts[0].Offset, Layouts[0].Footprint.RowPitch, Layouts[0].Footprint.RowPitch * NumRows[0]
+            };
+            UINT CurrentNumRows = NumRows[0];
+            UINT NumSlices = Layouts[0].Footprint.Depth;
+            // row by row copy memory.
+            for (UINT z = 0; z < NumSlices; ++z)
+            {
+                BYTE* pDestSlize = reinterpret_cast<BYTE*>(DestData.pData) + DestData.SlicePitch * z;
+                const BYTE* srcSlice = reinterpret_cast<const BYTE*>(subResourceData.pData) + subResourceData.SlicePitch
+                    * z;
+                for (UINT y = 0; y < CurrentNumRows; ++y)
+                {
+                    memcpy(
+                        pDestSlize + DestData.RowPitch * y,
+                        srcSlice + subResourceData.RowPitch * y,
+                        RowSizeInBytes[0]
+                    );
+                }
+            }
+        }
+        else
+        {
+            memcpy(pData,vertices.data(),vbByteSize);
+        }
+        // Unmap.
+        mBoxGeo->VertexBufferUploader->Unmap(0,nullptr);
+        pData = nullptr;
+        // copy buffer.
+        mCommandList->CopyBufferRegion(
+            mBoxGeo->VertexBufferGPU.Get(),
+            0,
+            mBoxGeo->VertexBufferUploader.Get(),
+            SrcOffset,
+            vbByteSize
+        );
+
+        // 同样的流程，复制index buffer.
+        hr = mBoxGeo->IndexBufferUploader->Map(0,nullptr,reinterpret_cast<void**>(&pData));
+        ThrowIfFailed(hr);
+        if(bUseSubresource)
+        {
+            
+        }
+        else
+        {
+            memcpy(pData,indices.data(),ibByteSize);
+        }
+        mBoxGeo->IndexBufferUploader->Unmap(0,nullptr);
+        pData = nullptr;
+        // copubuffer
+        mCommandList->CopyBufferRegion(
+            mBoxGeo->IndexBufferGPU.Get(),
+            0,
+            mBoxGeo->IndexBufferUploader.Get(),
+            0,
+            ibByteSize
+            
+        );
+
+
+        // Copy结束后，改变buffer状态
+        mCommandList->ResourceBarrier(
+           1,
+           &CD3DX12_RESOURCE_BARRIER::Transition(
+               mBoxGeo->VertexBufferGPU.Get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_GENERIC_READ
+           )
+       );
+        mCommandList->ResourceBarrier(
+          1,
+          &CD3DX12_RESOURCE_BARRIER::Transition(
+              mBoxGeo->IndexBufferGPU.Get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_GENERIC_READ
+          )
+      );
+        
+        
+        
     }
     
     // 执行初始化命令
@@ -295,6 +611,7 @@ void BoxApp::Update(const GameTimer& gt)
 
 void BoxApp::Draw(const GameTimer& gt)
 {
+    printf("draw");
     // cmd相关Reset
     mDirectCmdListAlloc->Reset();   // cmdlist 执行完后才能重置,即FlushCommandQuene之后.
     mCommandList->Reset(mDirectCmdListAlloc.Get(),mPSO.Get());  // 传入Queue后就可以重置.

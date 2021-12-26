@@ -110,7 +110,7 @@ bool D3DApp::Initialize()
     {
         return false;
     }
-
+    OnResize();
     // Do the initial resize code .
     // OnResize();
     return true;
@@ -302,6 +302,12 @@ bool D3DApp::InitDirect3D()
     ComPtr<ID3D12Debug> debugController;
     ThrowIfFailed( D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)) );
     debugController->EnableDebugLayer();
+
+    // 加载dll
+    if (GetModuleHandle(L"WinPixGpuCapturer.dll") == 0)
+    {
+        LoadLibrary(GetLatestWinPixGpuCapturerPath().c_str());
+    }
 #endif
     // DXGI:DirectX Graphics Infrastructure.DX图形基础结构.
     // 基本理念是使得多种图形API所共用的底层任务能通过其来统一处理，如2D与3D动画统一使用的交换链、页面翻转等功能.
