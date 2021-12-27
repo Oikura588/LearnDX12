@@ -56,7 +56,7 @@ HWND D3DApp::MainWnd() const
 
 float D3DApp::AspectRatio() const
 {
-    return static_cast<float>(mClientHeight)/mClientWidth;
+    return static_cast<float>(mClientWidth)/mClientHeight;
 }
 
 bool D3DApp::Get4xMsaaState() const
@@ -372,6 +372,7 @@ bool D3DApp::InitDirect3D()
     mCommandList->Reset(mDirectCmdListAlloc.Get(),nullptr);
 
     // dxgi内容，创建交换链。交换链依赖CommandQueue.
+    // 由于每次窗口大小改变后都需要改变缓冲区大小，因此RTV、DSV相关的内容都应该放到OnResize回调中.
     {
         // 释放之前的Swapchain，重新创建
         mSwapChain.Reset();
