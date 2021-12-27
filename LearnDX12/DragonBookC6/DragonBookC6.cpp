@@ -90,8 +90,8 @@ bool BoxApp::Initialize()
     {
         D3D12_DESCRIPTOR_HEAP_DESC heapDesc;
         heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        // 目前仅有一个描述符，即单个box物体的常量缓冲区的描述符.
-        heapDesc.NumDescriptors=1;
+        // 金字塔也需要描述符，所以数目为2
+        heapDesc.NumDescriptors=2;
         // Shader可见，因为需要读取
         heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         heapDesc.NodeMask = 0;
@@ -105,17 +105,27 @@ bool BoxApp::Initialize()
     // 初始化常量缓冲区以及View.
     {
         // 常量缓冲区是Upload类型，可以使用辅助函数来创建.
-        mObjectCB = std::make_unique<UploadBuffer<ObjectConstants>>(md3dDevice.Get(),1,true);
-
+        // 因为需要给金字塔也设置一个CB，所以Buffer数为2.
+        mObjectCB = std::make_unique<UploadBuffer<ObjectConstants>>(md3dDevice.Get(),2,true);
+        
         D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
         cbvDesc.BufferLocation = mObjectCB->Resource()->GetGPUVirtualAddress();
         cbvDesc.SizeInBytes = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
-
+        
         // 思考，哪里需要CPU描述符，哪里需要gpu描述符?
         // View的地址就是CBV heap的start，因为只有一个.
         md3dDevice->CreateConstantBufferView(
             &cbvDesc,
             mCbvHeap->GetCPUDescriptorHandleForHeapStart()
+        );
+        // Buffer的位置偏移,Buffer资源在GPU上所以是GPU的Handle.
+        cbvDesc.BufferLocation = mObjectCB->Resource()->GetGPUVirtualAddress() + cbvDesc.SizeInBytes;
+        // CPU上heap的描述符位置偏移.
+        D3D12_CPU_DESCRIPTOR_HANDLE descriptorHandle = mCbvHeap->GetCPUDescriptorHandleForHeapStart();
+        descriptorHandle.ptr += 1*mCbvUavDescriptorSize;
+        // 创建金字塔的描述符
+        md3dDevice->CreateConstantBufferView(
+            &cbvDesc,descriptorHandle
         );
     }
     
@@ -358,12 +368,36 @@ bool BoxApp::Initialize()
             4,0,3,
             4,3,7
         };
+        // 金字塔顶点和索引.
+        std::array<Vertex,8> pyramidVertices = {
+            Vertex({ XMFLOAT3(0.f, 0.f, 1.0f), XMFLOAT4(Colors::Red) }),
+           Vertex({ XMFLOAT3(-1.0f, -1.0f, 0.0f), XMFLOAT4(Colors::Green) }),
+           Vertex({ XMFLOAT3(+1.0f, -1.0f, -0.0f), XMFLOAT4(Colors::Green) }),
+           Vertex({ XMFLOAT3(1.0f, 1.0f, 0.0f), XMFLOAT4(Colors::Green) }),
+           Vertex({ XMFLOAT3(-1.0f, 1.0f, +0.0f), XMFLOAT4(Colors::Green) })
+        };
+        std::array<std::uint16_t,36> pyramidIndices = {
+            0,1,2,
+            0,2,3,
+
+            0,3,4,
+            0,4,1,
+
+            3,2,1,
+            1,4,3
+        };
+        std::vector<Vertex> totalVertices={vertices.begin(),vertices.end()};;
+        totalVertices.insert(totalVertices.end(),pyramidVertices.begin(),pyramidVertices.end());
+        std::vector<std::uint16_t> totalIndices={indices.begin(),indices.end()};
+        totalIndices.insert(totalIndices.end(),pyramidIndices.begin(),pyramidIndices.end());
+        
+        
         // 创建一个几何体.
         mBoxGeo = std::make_unique<MeshGeometry>();
         mBoxGeo->Name = "Box";
 
-        UINT vbByteSize = vertices.size()*sizeof(Vertex);
-        UINT ibByteSize= indices.size()*sizeof(std::uint16_t);
+        UINT vbByteSize = totalVertices.size()*sizeof(Vertex);
+        UINT ibByteSize= totalIndices.size()*sizeof(std::uint16_t);
         mBoxGeo->VertexByteStride = sizeof(Vertex);
         mBoxGeo->VertexBufferByteSize = vbByteSize;
         mBoxGeo->IndexFormat = DXGI_FORMAT_R16_UINT;
@@ -373,6 +407,13 @@ bool BoxApp::Initialize()
         submesh.BaseVertexLocation = 0;
         submesh.StartIndexLocation = 0;
         mBoxGeo->DrawArgs["box"]=submesh;
+
+        SubmeshGeometry submeshPyramid;
+        submeshPyramid.IndexCount = pyramidIndices.size();
+        // 这里的顶点和索引都接在前一个图形的后面
+        submeshPyramid.BaseVertexLocation = vertices.size();
+        submeshPyramid.StartIndexLocation = indices.size();
+        mBoxGeo->DrawArgs["pyramid"]=submeshPyramid;
 
         // 创建顶点缓冲区.
 
@@ -507,7 +548,7 @@ bool BoxApp::Initialize()
         }
         else
         {
-            memcpy(pData,vertices.data(),vbByteSize);
+            memcpy(pData,totalVertices.data(),vbByteSize);
         }
         // Unmap.
         mBoxGeo->VertexBufferUploader->Unmap(0,nullptr);
@@ -530,7 +571,7 @@ bool BoxApp::Initialize()
         }
         else
         {
-            memcpy(pData,indices.data(),ibByteSize);
+            memcpy(pData,totalIndices.data(),ibByteSize);
         }
         mBoxGeo->IndexBufferUploader->Unmap(0,nullptr);
         pData = nullptr;
@@ -607,6 +648,13 @@ void BoxApp::Update(const GameTimer& gt)
     // hlsl是列主序矩阵，DXMath中的矩阵传递时需要转置
     XMStoreFloat4x4(&objectConstants.ModelViewProj,XMMatrixTranspose( mvp));
     mObjectCB->CopyData(0,objectConstants);
+
+    XMMATRIX pyramidWorld = XMMatrixIdentity();
+    pyramidWorld = XMMatrixTranslation(3.0F,0.F,0.F);
+    mvp = pyramidWorld*view*proj;
+    // 更新金字塔的常量缓冲区.
+    XMStoreFloat4x4(&objectConstants.ModelViewProj,XMMatrixTranspose(mvp));
+    mObjectCB->CopyData(1,objectConstants);
 }
 
 void BoxApp::Draw(const GameTimer& gt)
@@ -644,6 +692,13 @@ void BoxApp::Draw(const GameTimer& gt)
     mCommandList->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     mCommandList->SetGraphicsRootDescriptorTable(0,mCbvHeap->GetGPUDescriptorHandleForHeapStart());
     mCommandList->DrawIndexedInstanced(mBoxGeo->DrawArgs["box"].IndexCount,1,0,0,0);
+    
+    // 单独设置Pyramid的世界矩阵.
+    D3D12_GPU_DESCRIPTOR_HANDLE pyramidOffset;
+    pyramidOffset.ptr= mCbvHeap->GetGPUDescriptorHandleForHeapStart().ptr+mCbvUavDescriptorSize;
+    mCommandList->SetGraphicsRootDescriptorTable(0,pyramidOffset);
+    mCommandList->DrawIndexedInstanced(mBoxGeo->DrawArgs["pyramid"].IndexCount,1,mBoxGeo->DrawArgs["pyramid"].StartIndexLocation,mBoxGeo->DrawArgs["pyramid"].BaseVertexLocation,0);
+    
 
     // 绘制完成后改变资源状态.
     mCommandList->ResourceBarrier(
