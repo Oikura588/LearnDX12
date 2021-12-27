@@ -265,7 +265,7 @@ bool BoxApp::Initialize()
         rasterizerDesc.CullMode = D3D12_CULL_MODE_NONE;
         rasterizerDesc.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
         // 渲染模式，是否启用线框模式渲染.
-        rasterizerDesc.FillMode = D3D12_FILL_MODE_SOLID;
+        rasterizerDesc.FillMode = D3D12_FILL_MODE_WIREFRAME;
         rasterizerDesc.MultisampleEnable = FALSE;
         rasterizerDesc.FrontCounterClockwise = FALSE;
         rasterizerDesc.AntialiasedLineEnable = FALSE;
