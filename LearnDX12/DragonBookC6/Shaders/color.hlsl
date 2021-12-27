@@ -6,7 +6,9 @@
 
 cbuffer cbPerObject : register(b0)
 {
-  float4x4 gWorldViewProj; 
+  float4x4 gWorldViewProj;
+  float4 gPulseColor;
+  float gTime;
 };
 
 struct VertexIn
@@ -36,7 +38,12 @@ VertexOut VS(VertexIn vin)
 
 float4 PS(VertexOut pin) : SV_Target
 {
-  return pin.Color;
+  const float pi = 3.14159;
+  float s = 0.5f*sin(2*gTime)+0.5f;
+
+  // 基于0~1之间的随时间变化的参数s，在Pin.Color与指定Color之间线性插值.
+  float4 c = lerp(pin.Color,gPulseColor,s);
+  return c;
 }
 
 
