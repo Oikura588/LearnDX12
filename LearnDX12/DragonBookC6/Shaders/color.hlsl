@@ -36,6 +36,9 @@ VertexOut VS(VertexIn vin)
 
 float4 PS(VertexOut pin) : SV_Target
 {
+  // 裁剪掉r值<0.5的像素
+  // 这里传入的参数如果为false则裁剪.
+  clip(pin.Color.r-0.5f);
   return pin.Color;
 }
 
