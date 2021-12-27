@@ -329,34 +329,22 @@ bool BoxApp::Initialize()
 
     // Build Geometry.和渲染没什么关系了，就是创建buffer并保存起来，绘制的时候用
     {
-        std::array<Vertex,8> vertices = {
-            Vertex({ XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT4(Colors::White) }),
-           Vertex({ XMFLOAT3(-1.0f, +1.0f, -1.0f), XMFLOAT4(Colors::Black) }),
-           Vertex({ XMFLOAT3(+1.0f, +1.0f, -1.0f), XMFLOAT4(Colors::Red) }),
-           Vertex({ XMFLOAT3(+1.0f, -1.0f, -1.0f), XMFLOAT4(Colors::Green) }),
-           Vertex({ XMFLOAT3(-1.0f, -1.0f, +1.0f), XMFLOAT4(Colors::Blue) }),
-           Vertex({ XMFLOAT3(-1.0f, +1.0f, +1.0f), XMFLOAT4(Colors::Yellow) }),
-           Vertex({ XMFLOAT3(+1.0f, +1.0f, +1.0f), XMFLOAT4(Colors::Cyan) }),
-           Vertex({ XMFLOAT3(+1.0f, -1.0f, +1.0f), XMFLOAT4(Colors::Magenta) })
+        std::array<Vertex,5> vertices = {
+            Vertex({ XMFLOAT3(0.f, 0.f, 1.0f), XMFLOAT4(Colors::Red) }),
+           Vertex({ XMFLOAT3(-1.0f, -1.0f, 0.0f), XMFLOAT4(Colors::Green) }),
+           Vertex({ XMFLOAT3(+1.0f, -1.0f, -0.0f), XMFLOAT4(Colors::Green) }),
+           Vertex({ XMFLOAT3(1.0f, 1.0f, 0.0f), XMFLOAT4(Colors::Green) }),
+           Vertex({ XMFLOAT3(-1.0f, 1.0f, +0.0f), XMFLOAT4(Colors::Green) })
         };
-        std::array<std::uint16_t,36> indices = {
+        std::array<std::uint16_t,18> indices = {
             0,1,2,
             0,2,3,
 
-            4,6,5,
-            4,7,6,
+            0,3,4,
+            0,4,1,
 
-            4,5,1,
-            4,1,0,
-
-            3,2,6,
-            3,6,7,
-
-            1,5,6,
-            1,6,2,
-
-            4,0,3,
-            4,3,7
+            3,2,1,
+            1,4,3
         };
         // 创建一个几何体.
         mBoxGeo = std::make_unique<MeshGeometry>();
