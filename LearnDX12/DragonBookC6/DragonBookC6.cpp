@@ -19,6 +19,8 @@ struct Vertex
 struct ObjectConstants
 {
     XMFLOAT4X4 ModelViewProj = MathHelper::Identity4x4();
+    float gTime;
+    XMFLOAT3 Empty;
 };
 
 class BoxApp : public D3DApp
@@ -606,6 +608,7 @@ void BoxApp::Update(const GameTimer& gt)
     ObjectConstants objectConstants;
     // hlsl是列主序矩阵，DXMath中的矩阵传递时需要转置
     XMStoreFloat4x4(&objectConstants.ModelViewProj,XMMatrixTranspose( mvp));
+    objectConstants.gTime = gt.TotalTime();
     mObjectCB->CopyData(0,objectConstants);
 }
 
