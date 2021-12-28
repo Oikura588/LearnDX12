@@ -9,16 +9,73 @@ using Microsoft::WRL::ComPtr;
 using namespace DirectX;
 using namespace DirectX::PackedVector;
 
+// FrameResources的数目.RenderItem和App都需要这个数据.
+static const  int gNumFrameResources=3;
 // 顶点信息
 struct Vertex
 {
     XMFLOAT3 Pos;
     XMFLOAT4 Color;
 };
-// 常量缓冲 MVP
+// 常量缓冲区.每个物体有自己的transform信息.
 struct ObjectConstants
 {
     XMFLOAT4X4 ModelViewProj = MathHelper::Identity4x4();
+};
+
+// 存储绘制一个物体需要的数据的结构，随着不同的程序有所差别.
+struct RenderItem
+{
+    RenderItem() = default;
+
+    // 物体的世界Transform.用这个格式来存储，可以直接memcpy到buffer中.
+    XMFLOAT4X4 World = MathHelper::Identity4x4();
+
+    // 用一个flag来计数，与FrameResource有关，每次判断这个值是否大于等于0来判断是否需要更新数据.
+    int NumFramesDirty = gNumFrameResources;
+    // 常量缓冲区中的偏移，如第10个物体就在缓冲区中第十个位置.
+    UINT ObjCBOffset = -1;
+    // 几何体的引用.几何体中存储了VertexBuffer和IndexBuffer.
+    MeshGeometry* Geo = nullptr;
+    // 图元类型
+    D3D12_PRIMITIVE_TOPOLOGY PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    // DrawInstance 的参数
+    UINT IndexCount;
+    UINT StartIndexLocation;
+    int BaseVertexLocation;
+};
+
+// 每次渲染时会更新的缓冲区。
+struct PassConstants
+{
+};
+
+// 以CPU每帧都需更新的资源作为基本元素，包括CmdListAlloc、ConstantBuffer等.
+// Draw()中进行绘制时，执行CmdList的Reset函数，来指定当前FrameResource所使用的CmdAlloc,从而将绘制命令存储在每帧的Alloc中.
+class FrameResource
+{
+public:
+    FrameResource(ID3D12Device* device,UINT passCount,UINT objectCount)
+    {
+        device->CreateCommandAllocator(
+            D3D12_COMMAND_LIST_TYPE_DIRECT,
+            IID_PPV_ARGS(CmdAlloc.GetAddressOf())
+        );
+        ObjectsCB = std::make_unique<UploadBuffer<ObjectConstants>>(device,objectCount,true);
+        PassCB = std::make_unique<UploadBuffer<PassConstants>>(device,passCount,true);
+    }
+    FrameResource(const FrameResource& rhs) = delete;
+    FrameResource& operator=(const FrameResource& rhs) = delete;
+
+    // GPU处理完与此Allocator相关的命令前，不能对其重置，所以每帧都需要保存自己的Alloc.
+    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> CmdAlloc;
+    
+    // 在GPU处理完此ConstantBuffer相关的命令前，不能对其重置
+    std::unique_ptr<UploadBuffer<ObjectConstants>> ObjectsCB = nullptr;
+    std::unique_ptr<UploadBuffer<PassConstants>> PassCB = nullptr;
+
+    // 每帧需要有自己的fence，来判断GPU与CPU的帧之间的同步.
+    UINT64 Fence = 0;
 };
 
 class BoxApp : public D3DApp
@@ -40,11 +97,21 @@ private:
     virtual void OnMouseMove(WPARAM btnState, int x, int y) override;
 
 private:
+   
     ComPtr<ID3D12RootSignature> mRootSignature  = nullptr;
     ComPtr<ID3D12DescriptorHeap> mCbvHeap       = nullptr;
 
-    // UploadBuffer在创建好后可以方便地每帧更新来修改数据.
-    std::unique_ptr<UploadBuffer<ObjectConstants>> mObjectCB = nullptr;
+    // 存储所有渲染项.
+    std::vector<std::unique_ptr<RenderItem>> mAllRenderItems;
+    // 根据材质来划分渲染项.
+    std::vector<RenderItem*> mOpaqueRenderItems;
+    std::vector<RenderItem*> mTransparentRenderItems;
+
+    // 所有渲染帧.
+    std::vector<std::unique_ptr<FrameResource>> mFrameResources;
+    FrameResource* mCurrentFrameResource=nullptr;
+    int mCurrentFrameIndex = 0;
+    
     // MeshGeometry中包含了顶点、索引的buffer及view，方便管理几何体.
     std::unique_ptr<MeshGeometry> mBoxGeo =nullptr;
     std::vector<D3D12_INPUT_ELEMENT_DESC> mInputLayout;
@@ -101,22 +168,20 @@ bool BoxApp::Initialize()
             IID_PPV_ARGS(mCbvHeap.GetAddressOf())
         ));
     }
+    // 初始化多个帧资源.需要给按照物体个数初始化常量缓冲区，所以需要事先知道物体个数.
+    {
+        for(int i=0;i<gNumFrameResources;++i)
+        {
+            mFrameResources.push_back(
+                std::make_unique<FrameResource>(md3dDevice.Get(),1,mAllRenderItems.size())
+            );
+        }
+    }
     
     // 初始化常量缓冲区以及View.
     {
-        // 常量缓冲区是Upload类型，可以使用辅助函数来创建.
-        mObjectCB = std::make_unique<UploadBuffer<ObjectConstants>>(md3dDevice.Get(),1,true);
-
-        D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
-        cbvDesc.BufferLocation = mObjectCB->Resource()->GetGPUVirtualAddress();
-        cbvDesc.SizeInBytes = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
-
-        // 思考，哪里需要CPU描述符，哪里需要gpu描述符?
-        // View的地址就是CBV heap的start，因为只有一个.
-        md3dDevice->CreateConstantBufferView(
-            &cbvDesc,
-            mCbvHeap->GetCPUDescriptorHandleForHeapStart()
-        );
+       // 由于有多个FrameResource,需要初始化每个FrameResource内、每个物体的的ConstantBuffer，同时把每个物体在buffer中的偏移量保存下来.
+        // 所有的FrameResource内的物体偏移是相同的，所以偏移信息存在物体中。
     }
     
     // 初始化RootSignature，把常量缓冲区绑定到GPU上供Shader读取.
@@ -585,33 +650,51 @@ void BoxApp::OnResize()
 
 void BoxApp::Update(const GameTimer& gt)
 {
-    // 更新Constant Buffer.
-    float x = mRadius*sinf(mPhi)*cosf(mTheta);
-    float y = mRadius*sinf(mPhi)*sinf(mTheta);
-    float z = mRadius*cosf(mPhi);
+    // 循环获取FrameResource
+    // 只有CPU比GPU快很多的情况需要特殊处理，其他情况下如果CPU很慢，每次Update后GPU都能直接Draw完成开始下次Update
+    // 这种情况下需要让CPU等待GPU.
+    mCurrentFrameIndex = (mCurrentFrameIndex+1)%gNumFrameResources;
+    mCurrentFrameResource = mFrameResources[mCurrentFrameIndex].get();
 
-    // View matrix.
-    XMVECTOR pos = XMVectorSet(x,y,z,1.0f);
-    XMVECTOR target = XMVectorZero();
-    XMVECTOR up = XMVectorSet(0.f,1,0.f,0.f);
+    // 初始时都是0，所以初始时不需要比较
+    if(mFence->GetCompletedValue()<mCurrentFrameResource->Fence &&mCurrentFrameResource->Fence!=0)
+    {
+        // 创建一个空的handle回调，用来阻塞程序直到触发fence点
+        HANDLE eventHandle = CreateEventEx(nullptr,false,false,EVENT_ALL_ACCESS);
+        mFence->SetEventOnCompletion(mCurrentFrameResource->Fence,eventHandle);
+        WaitForSingleObject(eventHandle,INFINITE);
+        CloseHandle(eventHandle);
+    }
 
-    XMMATRIX view = XMMatrixLookAtLH(pos,target,up);
-    XMStoreFloat4x4(&mView,view);
-
-    XMMATRIX model = XMLoadFloat4x4(&mWorld);
-    XMMATRIX proj = XMLoadFloat4x4(&mProj);
-    XMMATRIX mvp = model*view*proj;
-
-    // 更新常量缓冲区.
-    ObjectConstants objectConstants;
-    // hlsl是列主序矩阵，DXMath中的矩阵传递时需要转置
-    XMStoreFloat4x4(&objectConstants.ModelViewProj,XMMatrixTranspose( mvp));
-    mObjectCB->CopyData(0,objectConstants);
+    // 更新FrameResource内的资源.
+    
+    // // 更新Constant Buffer.
+    // float x = mRadius*sinf(mPhi)*cosf(mTheta);
+    // float y = mRadius*sinf(mPhi)*sinf(mTheta);
+    // float z = mRadius*cosf(mPhi);
+    //
+    // // View matrix.
+    // XMVECTOR pos = XMVectorSet(x,y,z,1.0f);
+    // XMVECTOR target = XMVectorZero();
+    // XMVECTOR up = XMVectorSet(0.f,1,0.f,0.f);
+    //
+    // XMMATRIX view = XMMatrixLookAtLH(pos,target,up);
+    // XMStoreFloat4x4(&mView,view);
+    //
+    // XMMATRIX model = XMLoadFloat4x4(&mWorld);
+    // XMMATRIX proj = XMLoadFloat4x4(&mProj);
+    // XMMATRIX mvp = model*view*proj;
+    //
+    // // 更新常量缓冲区.
+    // ObjectConstants objectConstants;
+    // // hlsl是列主序矩阵，DXMath中的矩阵传递时需要转置
+    // XMStoreFloat4x4(&objectConstants.ModelViewProj,XMMatrixTranspose( mvp));
+    // mObjectCB->CopyData(0,objectConstants);
 }
 
 void BoxApp::Draw(const GameTimer& gt)
 {
-    printf("draw");
+    
     // cmd相关Reset
     mDirectCmdListAlloc->Reset();   // cmdlist 执行完后才能重置,即FlushCommandQuene之后.
     mCommandList->Reset(mDirectCmdListAlloc.Get(),mPSO.Get());  // 传入Queue后就可以重置.
@@ -639,6 +722,8 @@ void BoxApp::Draw(const GameTimer& gt)
     ID3D12DescriptorHeap* descHeaps[] =  {mCbvHeap.Get()};
     mCommandList->SetDescriptorHeaps(_countof(descHeaps),descHeaps);
     mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
+
+    // 绘制一个物体需要绑定两个buffer、设置图元类型、设置常量缓冲区等，把这些绘制一个物体需要的数据整合起来，可以作为RenderItem.
     mCommandList->IASetVertexBuffers(0,1,&mBoxGeo->VertexBufferView());
     mCommandList->IASetIndexBuffer(&mBoxGeo->IndexBufferView());
     mCommandList->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -660,8 +745,11 @@ void BoxApp::Draw(const GameTimer& gt)
 
     mSwapChain->Present(0,0);
     mCurrBackBuffer = (mCurrBackBuffer+1)%SwapChainBufferCount;
-    FlushCommandQueue();
-    
+
+    // 增加Fence
+    mCurrentFence++;
+    mCurrentFrameResource->Fence = mCurrentFence;
+    mCommandQueue->Signal(mFence.Get(),mCurrentFence);
 }
 
 void BoxApp::OnMouseDown(WPARAM btnState, int x, int y)
