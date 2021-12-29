@@ -20,7 +20,7 @@ struct Vertex
 // 常量缓冲区.每个物体有自己的transform信息.
 struct ObjectConstants
 {
-    XMFLOAT4X4 ModelViewProj = MathHelper::Identity4x4();
+    XMFLOAT4X4 World = MathHelper::Identity4x4();
 };
 
 // 存储绘制一个物体需要的数据的结构，随着不同的程序有所差别.
@@ -48,6 +48,22 @@ struct RenderItem
 // 每次渲染时会更新的缓冲区。
 struct PassConstants
 {
+    XMFLOAT4X4 View;    
+    XMFLOAT4X4 InvView;
+    XMFLOAT4X4 Proj;
+    XMFLOAT4X4 InvProj;
+    XMFLOAT4X4 ViewProj;
+    XMFLOAT4X4 InvViewProj;
+
+    XMFLOAT3 EyePosition;
+    //float*4的内存对齐
+    float    cbPad1;                
+    XMFLOAT2 RenderTargetSize;
+    XMFLOAT2 InvRenderTargetSize;
+    float    NearZ;
+    float    FarZ;
+    float    TotalTime;
+    float    DeltaTime;
 };
 
 // 以CPU每帧都需更新的资源作为基本元素，包括CmdListAlloc、ConstantBuffer等.
@@ -130,6 +146,8 @@ private:
     float mTheta = 1.5f*XM_PI;
     float mPhi = XM_PIDIV4;
     float mRadius = 5.0f;
+    // 相机位置
+    XMFLOAT3 mEyePos;
 
     POINT mLastMousePos;
 };
@@ -201,11 +219,28 @@ bool BoxApp::Initialize()
         D3D12_ROOT_DESCRIPTOR_TABLE  rootDescTable;
         rootDescTable.pDescriptorRanges = &descRange;
         rootDescTable.NumDescriptorRanges = 1;
+
+        D3D12_DESCRIPTOR_RANGE passDescRange;
+        passDescRange.NumDescriptors = 1;
+        passDescRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+        // 思考,这里RegisterSpace意义还不清楚，下面那个对应着色器中的b0、b1之类的.
+        passDescRange.RegisterSpace = 0;
+        passDescRange.BaseShaderRegister=1;
+        passDescRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+        D3D12_ROOT_DESCRIPTOR_TABLE passDescTable;
+        passDescTable.pDescriptorRanges =&passDescRange;
+        passDescTable.NumDescriptorRanges = 1;
         
-        D3D12_ROOT_PARAMETER slotRootParameter[1];
+        D3D12_ROOT_PARAMETER slotRootParameter[2];
+        // object 
         slotRootParameter[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         slotRootParameter[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
         slotRootParameter[0].DescriptorTable = rootDescTable;
+        // pass
+        slotRootParameter[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        slotRootParameter[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        slotRootParameter[1].DescriptorTable = passDescTable;
         
         
         // 创建RootSignature.要使用Blob
@@ -214,7 +249,7 @@ bool BoxApp::Initialize()
         
         D3D12_ROOT_SIGNATURE_DESC rootSignatureDesc;
         rootSignatureDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-        rootSignatureDesc.NumParameters = 1;
+        rootSignatureDesc.NumParameters = 2;
         rootSignatureDesc.pParameters = slotRootParameter;
         rootSignatureDesc.pStaticSamplers = nullptr;
         rootSignatureDesc.NumStaticSamplers = 0;
@@ -667,6 +702,60 @@ void BoxApp::Update(const GameTimer& gt)
     }
 
     // 更新FrameResource内的资源.
+
+    // 更新物体的ConstantBuffer.每帧会判断物体的标记，如果为脏则更新
+    {
+        auto currObjectCB = mCurrentFrameResource->ObjectsCB.get();
+        for(auto& e:mAllRenderItems)
+        {
+            // 当标记为脏时更新.
+            if(e->NumFramesDirty>0)
+            {
+                XMMATRIX world = XMLoadFloat4x4(&e->World);
+                ObjectConstants objConstants;
+                XMStoreFloat4x4(&objConstants.World,XMMatrixTranspose(world));
+                currObjectCB->CopyData(e->ObjCBOffset,objConstants);
+                e->NumFramesDirty--;
+            }
+            
+        }
+    }
+    //  更新Pass的CB.
+    {
+        // 更新相机位置
+        float x = mRadius*sinf(mPhi)*cosf(mTheta);
+        float y = mRadius*sinf(mPhi)*sinf(mTheta);
+        float z = mRadius*cosf(mPhi);
+        
+        // View matrix.
+        XMVECTOR pos = XMVectorSet(x,y,z,1.0f);
+        XMStoreFloat3(&mEyePos,pos);
+        XMVECTOR target = XMVectorZero();
+        XMVECTOR up = XMVectorSet(0.f,1,0.f,0.f);
+        
+        XMMATRIX view = XMMatrixLookAtLH(pos,target,up);
+        XMStoreFloat4x4(&mView,view);
+        XMMATRIX proj = XMLoadFloat4x4(&mProj);
+        XMMATRIX viewProj = XMMatrixMultiply(view,proj);
+        XMMATRIX invViewProj = XMMatrixInverse(&XMMatrixDeterminant(viewProj),viewProj);
+        auto currPassCB = mCurrentFrameResource->PassCB.get();
+        PassConstants passConstants;
+        
+        XMStoreFloat4x4(&passConstants.View,XMMatrixTranspose(view));
+        XMStoreFloat4x4(&passConstants.InvView,XMMatrixTranspose(XMMatrixInverse(&XMMatrixDeterminant(view),view)));
+        XMStoreFloat4x4(&passConstants.Proj,XMMatrixTranspose(proj));
+        XMStoreFloat4x4(&passConstants.InvProj,XMMatrixTranspose(XMMatrixInverse(&XMMatrixDeterminant(proj),proj)));
+        XMStoreFloat4x4(&passConstants.ViewProj,XMMatrixTranspose(viewProj));
+        XMStoreFloat4x4(&passConstants.InvViewProj,XMMatrixTranspose(invViewProj));
+        passConstants.RenderTargetSize = XMFLOAT2((float)mClientWidth,(float)mClientHeight);
+        passConstants.InvRenderTargetSize = XMFLOAT2(1/(float)mClientWidth,1/(float)mClientHeight);
+        passConstants.EyePosition = mEyePos;
+        passConstants.NearZ = 1.0f;
+        passConstants.FarZ = 1000.0f;
+        passConstants.DeltaTime=gt.DeltaTime();
+        passConstants.TotalTime = gt.TotalTime();
+        currPassCB->CopyData(0,passConstants);
+    }
     
     // // 更新Constant Buffer.
     // float x = mRadius*sinf(mPhi)*cosf(mTheta);
