@@ -1,6 +1,9 @@
-﻿#pragma once
+#pragma once
 #include <cstdint>
 #include <DirectXMath.h>
+#include <vector>
+
+#include "MathHelper.h"
 
 class GeometryGenerator
 {
@@ -29,6 +32,43 @@ public:
         DirectX::XMFLOAT3 TangentU;
         DirectX::XMFLOAT2 TexC;
     };
-    
+
+    // 存储顶点和索引信息.
+    struct MeshData
+    {
+        std::vector<Vertex> Vertices;
+        std::vector<uint32> Indices32;
+        std::vector<uint16>& GetIndices16()
+        {
+            if(mIndices16.empty())
+            {
+                mIndices16.resize(Indices32.size());
+                for(size_t i=0;i<Indices32.size();++i)
+                {
+                    mIndices16[i]=static_cast<uint16>(Indices32[i]);
+                }
+            }
+        }
+    private:
+        std::vector<uint16> mIndices16;
+    };
+    // 球
+	static GeometryGenerator::MeshData GeometryGenerator::CreateSphere(float radius, uint32 sliceCount, uint32 stackCount);
+    // 几何球
+    static GeometryGenerator::MeshData GeometryGenerator::CreateGeosphere(float radius, uint32 numSubdivisions);
+
+    // 圆柱体.
+    static MeshData CreateCylinder(float bottomRadius,float topRadius,float height,uint32 sliceCount,uint32 stackCount);
+
+    // box
+    static MeshData CreateBox(float width,float height,float depth,uint32 numSubdivision);
+
+	/// Creates an mxn grid in the xz-plane with m rows and n columns, centered
+    static MeshData CreateGrid(float width,float depth,uint32 m,uint32 n);
+
+    // 进行一次细分.
+    static void Subdivide(MeshData& meshData);
+
+    static Vertex MidPoint(const Vertex& v0,const Vertex& v1);
     
 };
