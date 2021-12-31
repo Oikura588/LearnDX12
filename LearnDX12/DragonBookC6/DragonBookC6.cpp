@@ -3,7 +3,7 @@
 #include "../Common/d3dApp.h"
 #include "../Common/MathHelper.h"
 #include "../Common/UploadBuffer.h"
-
+#include "../Common/GeometryGenerator.h"
 #include <DirectXColors.h>
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
@@ -458,6 +458,52 @@ bool BoxApp::Initialize()
             4,0,3,
             4,3,7
         };
+
+
+        // 使用工具函数创建顶点和索引的数组
+        GeometryGenerator::MeshData box = GeometryGenerator::CreateBox(1.5f,0.5f,1.5f,3);
+        GeometryGenerator::MeshData grid = GeometryGenerator::CreateGrid(20.0f,30.0f,60,40);
+        GeometryGenerator::MeshData sphere = GeometryGenerator::CreateSphere(0.5f,20.0f,20.0f);
+        GeometryGenerator::MeshData cylinder =GeometryGenerator::CreateCylinder(0.5f,0.3f,3.0f,20,20);
+
+        // 计算每个物体的顶点偏移量
+        UINT boxVertexOffset = 0;
+        UINT gridVertexOffset = box.Vertices.size();
+        UINT sphereVertexOffset = gridVertexOffset + grid.Vertices.size();
+        UINT cylinderVertexOffset = sphereVertexOffset + sphere.Vertices.size();
+
+        // 计算索引偏移量
+        UINT boxIndexOffset = 0;
+        UINT girdIndexOffset = box.Indices32.size();
+        UINT sphereIndexOffset  = grid.Indices32.size()+gridVertexOffset;
+        UINT cylinderIndexOffset = sphereIndexOffset + sphere.Indices32.size();
+
+        // 多个子网格绘制参数，存储索引信息.
+        SubmeshGeometry boxSubmesh;
+        boxSubmesh.BaseVertexLocation = boxVertexOffset;
+        boxSubmesh.IndexCount = box.Indices32.size();
+        boxSubmesh.StartIndexLocation = boxIndexOffset;
+
+        SubmeshGeometry gridSubmesh;
+        gridSubmesh.BaseVertexLocation = gridVertexOffset;
+        gridSubmesh.IndexCount = grid.Indices32.size();
+        gridSubmesh.StartIndexLocation = girdIndexOffset;
+
+		SubmeshGeometry sphereSubmesh;
+        sphereSubmesh.BaseVertexLocation = sphereVertexOffset;
+        sphereSubmesh.IndexCount = sphere.Indices32.size();
+        sphereSubmesh.StartIndexLocation = sphereIndexOffset;
+
+		SubmeshGeometry cylinderSubmesh;
+        cylinderSubmesh.BaseVertexLocation = cylinderVertexOffset;
+        cylinderSubmesh.IndexCount = cylinder.Indices32.size();
+        cylinderSubmesh.StartIndexLocation = cylinderIndexOffset;
+
+        // 把所有的顶点、索引放到一个缓冲区内
+        auto totalVertexCount = box.Vertices.size()+grid.Vertices.size()+sphere.Vertices.size()+cylinder.Vertices.size();
+
+
+
         // 创建一个几何体.
         mBoxGeo = std::make_unique<MeshGeometry>();
         mBoxGeo->Name = "Box";

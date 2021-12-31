@@ -53,9 +53,9 @@ public:
         std::vector<uint16> mIndices16;
     };
     // 球
-	static GeometryGenerator::MeshData GeometryGenerator::CreateSphere(float radius, uint32 sliceCount, uint32 stackCount);
+	static MeshData GeometryGenerator::CreateSphere(float radius, uint32 sliceCount, uint32 stackCount);
     // 几何球
-    static GeometryGenerator::MeshData GeometryGenerator::CreateGeosphere(float radius, uint32 numSubdivisions);
+    static MeshData GeometryGenerator::CreateGeosphere(float radius, uint32 numSubdivisions);
 
     // 圆柱体.
     static MeshData CreateCylinder(float bottomRadius,float topRadius,float height,uint32 sliceCount,uint32 stackCount);
