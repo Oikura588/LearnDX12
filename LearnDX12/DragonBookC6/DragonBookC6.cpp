@@ -129,14 +129,13 @@ private:
     int mCurrentFrameIndex = 0;
     
     // MeshGeometry中包含了顶点、索引的buffer及view，方便管理几何体.
-    std::unique_ptr<MeshGeometry> mBoxGeo =nullptr;
+    std::unordered_map<std::string,std::unique_ptr<MeshGeometry>> mGeometries;
     std::vector<D3D12_INPUT_ELEMENT_DESC> mInputLayout;
     // Shaders.
-    ComPtr<ID3DBlob> mvsByteCode = nullptr;
-    ComPtr<ID3DBlob> mpsBytecode = nullptr;
+    std::unordered_map<std::string,ComPtr<ID3DBlob>> mShaders;
 
     // Pipeline state object.
-    ComPtr<ID3D12PipelineState> mPSO = nullptr;
+    std::unordered_map<std::string,ComPtr<ID3D12PipelineState>> mPSOs;
 
     // 单个物体的常量缓冲区.
     XMFLOAT4X4 mWorld = MathHelper::Identity4x4();
@@ -294,6 +293,8 @@ bool BoxApp::Initialize()
         filename = L"Shaders\\color.hlsl";
         entrypoint = "VS";
         target = "vs_5_0";
+        mShaders["vShader"] = nullptr;
+        mShaders["pShader"] = nullptr;
         
         hr = D3DCompileFromFile(
             filename.c_str(),
@@ -303,7 +304,7 @@ bool BoxApp::Initialize()
             target.c_str(),
             compileFlags,
             0,
-            &mvsByteCode,
+            &mShaders["vShader"],
             &errorCode
         );
         if(errorCode!=nullptr)
@@ -326,7 +327,7 @@ bool BoxApp::Initialize()
           target.c_str(),
           compileFlags,
           0,
-          &mpsBytecode,
+          &mShaders["pShader"],
           &errorCode
       );
         if(errorCode!=nullptr)
@@ -401,11 +402,11 @@ bool BoxApp::Initialize()
         // 把blob转为Shader bytecode.
         pipelineStateDesc.VS  =
             {
-            reinterpret_cast<BYTE*>(mvsByteCode->GetBufferPointer()),mvsByteCode->GetBufferSize()
+            reinterpret_cast<BYTE*>(mShaders["vShader"]->GetBufferPointer()),mShaders["vShader"]->GetBufferSize()
             };
         pipelineStateDesc.PS =
             {
-            reinterpret_cast<BYTE*>(mpsBytecode->GetBufferPointer()),mpsBytecode->GetBufferSize()
+            reinterpret_cast<BYTE*>(mShaders["pShader"]->GetBufferPointer()),mShaders["pShader"]->GetBufferSize()
             };
         pipelineStateDesc.BlendState = blendDesc;
         // 一般全部开启.
@@ -421,7 +422,7 @@ bool BoxApp::Initialize()
         pipelineStateDesc.SampleDesc.Quality = 0;
 
         ThrowIfFailed( md3dDevice->CreateGraphicsPipelineState(
-            &pipelineStateDesc,IID_PPV_ARGS(&mPSO)
+            &pipelineStateDesc,IID_PPV_ARGS(&mPSOs["defaultPSO"])
         ));
         
         
@@ -429,37 +430,6 @@ bool BoxApp::Initialize()
 
     // Build Geometry.和渲染没什么关系了，就是创建buffer并保存起来，绘制的时候用
     {
-        std::array<Vertex,8> vertices = {
-            Vertex({ XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT4(Colors::White) }),
-           Vertex({ XMFLOAT3(-1.0f, +1.0f, -1.0f), XMFLOAT4(Colors::Black) }),
-           Vertex({ XMFLOAT3(+1.0f, +1.0f, -1.0f), XMFLOAT4(Colors::Red) }),
-           Vertex({ XMFLOAT3(+1.0f, -1.0f, -1.0f), XMFLOAT4(Colors::Green) }),
-           Vertex({ XMFLOAT3(-1.0f, -1.0f, +1.0f), XMFLOAT4(Colors::Blue) }),
-           Vertex({ XMFLOAT3(-1.0f, +1.0f, +1.0f), XMFLOAT4(Colors::Yellow) }),
-           Vertex({ XMFLOAT3(+1.0f, +1.0f, +1.0f), XMFLOAT4(Colors::Cyan) }),
-           Vertex({ XMFLOAT3(+1.0f, -1.0f, +1.0f), XMFLOAT4(Colors::Magenta) })
-        };
-        std::array<std::uint16_t,36> indices = {
-            0,1,2,
-            0,2,3,
-
-            4,6,5,
-            4,7,6,
-
-            4,5,1,
-            4,1,0,
-
-            3,2,6,
-            3,6,7,
-
-            1,5,6,
-            1,6,2,
-
-            4,0,3,
-            4,3,7
-        };
-
-
         // 使用工具函数创建顶点和索引的数组
         GeometryGenerator::MeshData box = GeometryGenerator::CreateBox(1.5f,0.5f,1.5f,3);
         GeometryGenerator::MeshData grid = GeometryGenerator::CreateGrid(20.0f,30.0f,60,40);
@@ -501,24 +471,56 @@ bool BoxApp::Initialize()
 
         // 把所有的顶点、索引放到一个缓冲区内
         auto totalVertexCount = box.Vertices.size()+grid.Vertices.size()+sphere.Vertices.size()+cylinder.Vertices.size();
+        
+        std::vector<Vertex> vertices(totalVertexCount);
+        UINT k=0;
+        for (size_t i = 0; i < box.Vertices.size(); ++i, ++k)
+        {
+            vertices[k].Pos = box.Vertices[i].Position;
+			vertices[k].Color = XMFLOAT4(DirectX::Colors::DarkGreen);
 
+        }
+        for (size_t i = 0; i < grid.Vertices.size(); ++i,++k)
+        {
+            vertices[k].Pos = grid.Vertices[i].Position;
+			vertices[k].Color = XMFLOAT4(DirectX::Colors::ForestGreen);
+        }
+        for (size_t i = 0; i < sphere.Vertices.size(); ++i, ++k)
+        {
+            vertices[k].Pos = sphere.Vertices[i].Position;
+			vertices[k].Color = XMFLOAT4(DirectX::Colors::Crimson);
+        }
+        for (size_t i = 0; i < cylinder.Vertices.size(); ++i, ++k)
+        {
+            vertices[k].Pos = cylinder.Vertices[i].Position;
+			vertices[k].Color = XMFLOAT4(DirectX::Colors::SteelBlue);
+        }
 
+        // 索引的缓冲区.
+        std::vector<std::uint16_t> indices;
+        indices.insert(indices.end(),std::begin(box.GetIndices16()),std::end(box.GetIndices16()));
+		indices.insert(indices.end(), std::begin(grid.GetIndices16()), std::end(grid.GetIndices16()));
+		indices.insert(indices.end(), std::begin(sphere.GetIndices16()), std::end(sphere.GetIndices16()));
+		indices.insert(indices.end(), std::begin(cylinder.GetIndices16()), std::end(cylinder.GetIndices16()));
+      
 
-        // 创建一个几何体.
-        mBoxGeo = std::make_unique<MeshGeometry>();
-        mBoxGeo->Name = "Box";
+        // 创建几何体和子几何体，存储绘制所用到的Index、Vertex信息
+        mGeometries["shapeGeo"] = std::make_unique<MeshGeometry>();
+        MeshGeometry* mBoxGeo = mGeometries["shapeGeo"].get();
 
         UINT vbByteSize = vertices.size()*sizeof(Vertex);
         UINT ibByteSize= indices.size()*sizeof(std::uint16_t);
+
         mBoxGeo->VertexByteStride = sizeof(Vertex);
         mBoxGeo->VertexBufferByteSize = vbByteSize;
         mBoxGeo->IndexFormat = DXGI_FORMAT_R16_UINT;
         mBoxGeo->IndexBufferByteSize = ibByteSize;
-        SubmeshGeometry submesh;
-        submesh.IndexCount = indices.size();
-        submesh.BaseVertexLocation = 0;
-        submesh.StartIndexLocation = 0;
-        mBoxGeo->DrawArgs["box"]=submesh;
+    
+        mBoxGeo->DrawArgs["box"]=boxSubmesh;
+        mBoxGeo->DrawArgs["grid"]=gridSubmesh;
+        mBoxGeo->DrawArgs["sphere"] = sphereSubmesh;
+        mBoxGeo->DrawArgs["cylinder"] = cylinderSubmesh;
+        
 
         // 创建顶点缓冲区.
 
@@ -613,45 +615,6 @@ bool BoxApp::Initialize()
         UINT64 SrcOffset = 0;
         UINT64 NumBytes = 0;
 
-        bool bUseSubresource = false;
-        if(bUseSubresource)
-        {
-            // 使用Subresource 进行map
-            D3D12_SUBRESOURCE_DATA subResourceData = {};
-            subResourceData.pData = vertices.data();
-            // 对buffer来说，这两个参数都是buffer的size
-            subResourceData.RowPitch = vbByteSize;
-            subResourceData.SlicePitch = vbByteSize;
-            UINT64 RequiredSize = 0;
-            D3D12_PLACED_SUBRESOURCE_FOOTPRINT Layouts[1];
-            UINT NumRows[1];
-            UINT64 RowSizeInBytes[1];
-            D3D12_RESOURCE_DESC Desc = mBoxGeo->VertexBufferGPU.Get()->GetDesc();
-            md3dDevice->GetCopyableFootprints(&Desc, 0, 1, 0, Layouts, NumRows, RowSizeInBytes, &RequiredSize);
-            SrcOffset = Layouts[0].Offset;
-            NumBytes = Layouts[0].Footprint.Width;
-            D3D12_MEMCPY_DEST DestData = {
-                pData + Layouts[0].Offset, Layouts[0].Footprint.RowPitch, Layouts[0].Footprint.RowPitch * NumRows[0]
-            };
-            UINT CurrentNumRows = NumRows[0];
-            UINT NumSlices = Layouts[0].Footprint.Depth;
-            // row by row copy memory.
-            for (UINT z = 0; z < NumSlices; ++z)
-            {
-                BYTE* pDestSlize = reinterpret_cast<BYTE*>(DestData.pData) + DestData.SlicePitch * z;
-                const BYTE* srcSlice = reinterpret_cast<const BYTE*>(subResourceData.pData) + subResourceData.SlicePitch
-                    * z;
-                for (UINT y = 0; y < CurrentNumRows; ++y)
-                {
-                    memcpy(
-                        pDestSlize + DestData.RowPitch * y,
-                        srcSlice + subResourceData.RowPitch * y,
-                        RowSizeInBytes[0]
-                    );
-                }
-            }
-        }
-        else
         {
             memcpy(pData,vertices.data(),vbByteSize);
         }
@@ -670,11 +633,6 @@ bool BoxApp::Initialize()
         // 同样的流程，复制index buffer.
         hr = mBoxGeo->IndexBufferUploader->Map(0,nullptr,reinterpret_cast<void**>(&pData));
         ThrowIfFailed(hr);
-        if(bUseSubresource)
-        {
-            
-        }
-        else
         {
             memcpy(pData,indices.data(),ibByteSize);
         }
@@ -707,6 +665,91 @@ bool BoxApp::Initialize()
         
         
         
+    }
+
+    // 构建几何体后就可以Build渲染项了，渲染项可以理解为是几何体的实例化，每个渲染项是场景中的一个物体，比如可能有多个圆台形组成的物体
+    {
+        auto boxRenderItem = std::make_unique<RenderItem>();
+        XMStoreFloat4x4(&boxRenderItem->World,XMMatrixScaling(2.F,2.F,2.F)*XMMatrixTranslation(0.,0.5f,0.0f));
+        boxRenderItem->ObjCBOffset = 0;
+        boxRenderItem->Geo = mGeometries["shapeGeo"].get();
+        boxRenderItem->PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+        boxRenderItem->BaseVertexLocation = boxRenderItem->Geo->DrawArgs["box"].BaseVertexLocation;
+        boxRenderItem->StartIndexLocation = boxRenderItem->Geo->DrawArgs["box"].StartIndexLocation;
+        boxRenderItem->IndexCount = boxRenderItem->Geo->DrawArgs["box"].IndexCount;
+
+        mAllRenderItems.push_back(std::move(boxRenderItem));
+
+        auto gridRenderItem = std::make_unique<RenderItem>();
+        gridRenderItem->World =MathHelper::Identity4x4();
+        gridRenderItem->ObjCBOffset = 1;
+        gridRenderItem->PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+        gridRenderItem->Geo = mGeometries["shapeGeo"].get();
+        gridRenderItem->BaseVertexLocation =gridRenderItem->Geo->DrawArgs["grid"].BaseVertexLocation;
+        gridRenderItem->StartIndexLocation = gridRenderItem->Geo->DrawArgs["grid"].StartIndexLocation;
+        gridRenderItem->IndexCount = gridRenderItem->Geo->DrawArgs["grid"].IndexCount;
+
+        mAllRenderItems.push_back(std::move(gridRenderItem));
+
+        // 构建柱体和球体.
+        UINT objCBOffset = 2;
+        for(int i =0;i<5;++i)
+        {
+            auto leftCylRenderItem = std::make_unique<RenderItem>();
+            auto rightCylRenderItem = std::make_unique<RenderItem>();
+            auto leftSphereRenderItem = std::make_unique<RenderItem>();
+            auto rightSphereRenderItem = std::make_unique<RenderItem>();
+
+            XMMATRIX leftCylWorld = XMMatrixTranslation(-5.0f,1.5f,-10.0f+5.f*i);
+            XMMATRIX rightCylWorld = XMMatrixTranslation(5.0f,1.5f,-10.0f+5.f*i);
+            
+            XMMATRIX leftSphereWorld = XMMatrixTranslation(-5.0f,3.5f,-10.0f+5.f*i);
+            XMMATRIX rightSphereWorld = XMMatrixTranslation(5.0f,3.5f,-10.0f+5.f*i);
+
+            XMStoreFloat4x4(&leftCylRenderItem->World,leftCylWorld);
+            XMStoreFloat4x4(&rightCylRenderItem->World,rightCylWorld);
+            XMStoreFloat4x4(&leftSphereRenderItem->World,leftSphereWorld);
+            XMStoreFloat4x4(&rightSphereRenderItem->World,rightSphereWorld);
+
+            leftCylRenderItem->ObjCBOffset = objCBOffset++;
+            leftCylRenderItem->PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+            leftCylRenderItem->Geo = mGeometries["shapeGeo"].get();
+            leftCylRenderItem->IndexCount = leftCylRenderItem->Geo->DrawArgs["cylinder"].IndexCount;
+            leftCylRenderItem->StartIndexLocation = leftCylRenderItem->Geo->DrawArgs["cylinder"].StartIndexLocation;
+            leftCylRenderItem->BaseVertexLocation = leftCylRenderItem->Geo->DrawArgs["cylinder"].BaseVertexLocation;
+            mAllRenderItems.push_back(std::move(leftSphereRenderItem));
+
+            rightCylRenderItem->ObjCBOffset = objCBOffset++;
+            rightCylRenderItem->PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+            rightCylRenderItem->Geo = mGeometries["shapeGeo"].get();
+            rightCylRenderItem->IndexCount = rightCylRenderItem->Geo->DrawArgs["cylinder"].IndexCount;
+            rightCylRenderItem->StartIndexLocation = rightCylRenderItem->Geo->DrawArgs["cylinder"].StartIndexLocation;
+            rightCylRenderItem->BaseVertexLocation = rightCylRenderItem->Geo->DrawArgs["cylinder"].BaseVertexLocation;
+            mAllRenderItems.push_back(std::move(rightCylRenderItem));
+
+            leftSphereRenderItem->ObjCBOffset = objCBOffset++;
+            leftSphereRenderItem->PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+            leftSphereRenderItem->Geo = mGeometries["shapeGeo"].get();
+            leftSphereRenderItem->IndexCount = leftSphereRenderItem->Geo->DrawArgs["sphere"].IndexCount;
+            leftSphereRenderItem->StartIndexLocation = leftSphereRenderItem->Geo->DrawArgs["sphere"].StartIndexLocation;
+            leftSphereRenderItem->BaseVertexLocation = leftSphereRenderItem->Geo->DrawArgs["sphere"].BaseVertexLocation;
+            mAllRenderItems.push_back(std::move(leftSphereRenderItem));
+
+            
+            rightSphereRenderItem->ObjCBOffset = objCBOffset++;
+            rightSphereRenderItem->PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+            rightSphereRenderItem->Geo = mGeometries["shapeGeo"].get();
+            rightSphereRenderItem->IndexCount = rightSphereRenderItem->Geo->DrawArgs["sphere"].IndexCount;
+            rightSphereRenderItem->StartIndexLocation = rightSphereRenderItem->Geo->DrawArgs["sphere"].StartIndexLocation;
+            rightSphereRenderItem->BaseVertexLocation = rightSphereRenderItem->Geo->DrawArgs["sphere"].BaseVertexLocation;
+            mAllRenderItems.push_back(std::move(rightSphereRenderItem));
+        }
+
+        // 非透明，添加到对应Pass中
+        for(auto& e:mAllRenderItems)
+        {
+            mOpaqueRenderItems.push_back(e.get());
+        }
     }
     
     // 执行初始化命令
@@ -832,7 +875,7 @@ void BoxApp::Draw(const GameTimer& gt)
     
     // cmd相关Reset
     mDirectCmdListAlloc->Reset();   // cmdlist 执行完后才能重置,即FlushCommandQuene之后.
-    mCommandList->Reset(mDirectCmdListAlloc.Get(),mPSO.Get());  // 传入Queue后就可以重置.
+    mCommandList->Reset(mDirectCmdListAlloc.Get(),mPSOs["defaultPSO"].Get());  // 传入Queue后就可以重置.
 
     mCommandList->RSSetViewports(1,&mScreenViewport);
     mCommandList->RSSetScissorRects(1,&mScissorRect);
