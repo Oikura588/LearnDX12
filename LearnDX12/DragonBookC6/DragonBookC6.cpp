@@ -560,7 +560,7 @@ bool BoxApp::Initialize()
 		for (int frameIndex = 0; frameIndex < gNumFrameResources; ++frameIndex)
 		{
 			auto PassCB = mFrameResources[frameIndex]->PassCB->Resource();
-			UINT passCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(PassCB));
+			UINT passCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(PassConstants));
 			D3D12_GPU_VIRTUAL_ADDRESS passAddress = PassCB->GetGPUVirtualAddress();
 
 			D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
@@ -825,6 +825,23 @@ void BoxApp::OnResize()
 
 void BoxApp::Update(const GameTimer& gt)
 {
+    // 更新相机
+    {
+		// 更新相机位置
+		float x = mRadius * sinf(mPhi) * cosf(mTheta);
+		float y = mRadius * sinf(mPhi) * sinf(mTheta);
+		float z = mRadius * cosf(mPhi);
+
+		// View matrix.
+		XMVECTOR pos = XMVectorSet(x, y, z, 1.0f);
+		XMStoreFloat3(&mEyePos, pos);
+		XMVECTOR target = XMVectorZero();
+		XMVECTOR up = XMVectorSet(0.f, 1, 0.f, 0.f);
+		XMMATRIX view = XMMatrixLookAtLH(pos, target, up);
+		XMStoreFloat4x4(&mView, view);
+    }
+
+
     // 循环获取FrameResource
     // 只有CPU比GPU快很多的情况需要特殊处理，其他情况下如果CPU很慢，每次Update后GPU都能直接Draw完成开始下次Update
     // 这种情况下需要让CPU等待GPU.
@@ -862,19 +879,7 @@ void BoxApp::Update(const GameTimer& gt)
     }
     //  更新Pass的CB.
     {
-        // 更新相机位置
-        float x = mRadius*sinf(mPhi)*cosf(mTheta);
-        float y = mRadius*sinf(mPhi)*sinf(mTheta);
-        float z = mRadius*cosf(mPhi);
-        
-        // View matrix.
-        XMVECTOR pos = XMVectorSet(x,y,z,1.0f);
-        XMStoreFloat3(&mEyePos,pos);
-        XMVECTOR target = XMVectorZero();
-        XMVECTOR up = XMVectorSet(0.f,1,0.f,0.f);
-        
-        XMMATRIX view = XMMatrixLookAtLH(pos,target,up);
-        XMStoreFloat4x4(&mView,view);
+        XMMATRIX view = XMLoadFloat4x4(&mView);
         XMMATRIX proj = XMLoadFloat4x4(&mProj);
         XMMATRIX viewProj = XMMatrixMultiply(view,proj);
         XMMATRIX invViewProj = XMMatrixInverse(&XMMatrixDeterminant(viewProj),viewProj);
@@ -972,8 +977,8 @@ void BoxApp::Draw(const GameTimer& gt)
 			D3D12_GPU_DESCRIPTOR_HANDLE cbvHandle =  mCbvHeap->GetGPUDescriptorHandleForHeapStart();
 			cbvHandle.ptr+= (ri->ObjCBOffset+mOpaqueRenderItems.size()*mCurrentFrameIndex)*mCbvUavDescriptorSize;
 			mCommandList->SetGraphicsRootDescriptorTable(0, cbvHandle);
-			//mCommandList->DrawIndexedInstanced(ri->IndexCount,1,ri->StartIndexLocation,ri->BaseVertexLocation,0);
-            mCommandList->DrawIndexedInstanced(3,1,0,0,0);
+			mCommandList->DrawIndexedInstanced(ri->IndexCount,1,ri->StartIndexLocation,ri->BaseVertexLocation,0);
+            //mCommandList->DrawIndexedInstanced(3,1,0,0,0);
 		}
 
 	}
@@ -991,7 +996,7 @@ void BoxApp::Draw(const GameTimer& gt)
     ID3D12CommandList* cmdLists[] = {mCommandList.Get()};
     mCommandQueue->ExecuteCommandLists(_countof(cmdLists),cmdLists);
 
-    mSwapChain->Present(0,0);
+    ThrowIfFailed(mSwapChain->Present(0,0));
     mCurrBackBuffer = (mCurrBackBuffer+1)%SwapChainBufferCount;
 
     // 增加Fence
