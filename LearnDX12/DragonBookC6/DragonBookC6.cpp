@@ -188,7 +188,7 @@ bool BoxApp::Initialize()
 		// 计算索引偏移量
 		UINT boxIndexOffset = 0;
 		UINT girdIndexOffset = box.Indices32.size();
-		UINT sphereIndexOffset = grid.Indices32.size() + gridVertexOffset;
+		UINT sphereIndexOffset = girdIndexOffset + grid.Indices32.size()  ;
 		UINT cylinderIndexOffset = sphereIndexOffset + sphere.Indices32.size();
 
 		// 多个子网格绘制参数，存储索引信息.
