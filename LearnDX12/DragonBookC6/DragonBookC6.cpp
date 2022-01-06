@@ -144,12 +144,14 @@ private:
     XMFLOAT4X4 mProj = MathHelper::Identity4x4();
     // Camera
     float mTheta = 1.5f*XM_PI;
-    float mPhi = XM_PIDIV4;
-    float mRadius = 5.0f;
+    float mPhi = XM_PIDIV2-0.1f;
+    float mRadius = 50.f;
     // 相机位置
     XMFLOAT3 mEyePos;
 
     POINT mLastMousePos;
+
+    float GetHillsHeight(float x,float z) const;
 };
 
 BoxApp::BoxApp(HINSTANCE hinstance)
@@ -174,77 +176,31 @@ bool BoxApp::Initialize()
 	// Build Geometry.和渲染没什么关系了，就是创建buffer并保存起来，绘制的时候用
 	{
 		// 使用工具函数创建顶点和索引的数组
-		GeometryGenerator::MeshData box = GeometryGenerator::CreateBox(1.5f, 0.5f, 1.5f, 3);
-		GeometryGenerator::MeshData grid = GeometryGenerator::CreateGrid(20.0f, 30.0f, 60, 40);
-		GeometryGenerator::MeshData sphere = GeometryGenerator::CreateSphere(0.5f, 20.0f, 20.0f);
-		GeometryGenerator::MeshData cylinder = GeometryGenerator::CreateCylinder(0.5f, 0.3f, 3.0f, 20, 20);
-
-		// 计算每个物体的顶点偏移量
-		UINT boxVertexOffset = 0;
-		UINT gridVertexOffset = box.Vertices.size();
-		UINT sphereVertexOffset = gridVertexOffset + grid.Vertices.size();
-		UINT cylinderVertexOffset = sphereVertexOffset + sphere.Vertices.size();
-
-		// 计算索引偏移量
-		UINT boxIndexOffset = 0;
-		UINT girdIndexOffset = box.Indices32.size();
-		UINT sphereIndexOffset = girdIndexOffset + grid.Indices32.size()  ;
-		UINT cylinderIndexOffset = sphereIndexOffset + sphere.Indices32.size();
-
-		// 多个子网格绘制参数，存储索引信息.
-		SubmeshGeometry boxSubmesh;
-		boxSubmesh.BaseVertexLocation = boxVertexOffset;
-		boxSubmesh.IndexCount = box.Indices32.size();
-		boxSubmesh.StartIndexLocation = boxIndexOffset;
+		GeometryGenerator::MeshData grid = GeometryGenerator::CreateGrid(160.0f, 160.0f, 50, 50);
 
 		SubmeshGeometry gridSubmesh;
-		gridSubmesh.BaseVertexLocation = gridVertexOffset;
+		gridSubmesh.BaseVertexLocation = 0;
 		gridSubmesh.IndexCount = grid.Indices32.size();
-		gridSubmesh.StartIndexLocation = girdIndexOffset;
+		gridSubmesh.StartIndexLocation = 0;
 
-		SubmeshGeometry sphereSubmesh;
-		sphereSubmesh.BaseVertexLocation = sphereVertexOffset;
-		sphereSubmesh.IndexCount = sphere.Indices32.size();
-		sphereSubmesh.StartIndexLocation = sphereIndexOffset;
+		std::vector<Vertex> vertices(grid.Vertices.size());
+        for (size_t i = 0; i < vertices.size(); ++i)
+        {
+            auto& p = grid.Vertices[i].Position;
+            vertices[i].Pos = p;
+            vertices[i].Pos.y = GetHillsHeight(p.x,p.z);
 
-		SubmeshGeometry cylinderSubmesh;
-		cylinderSubmesh.BaseVertexLocation = cylinderVertexOffset;
-		cylinderSubmesh.IndexCount = cylinder.Indices32.size();
-		cylinderSubmesh.StartIndexLocation = cylinderIndexOffset;
-
-		// 把所有的顶点、索引放到一个缓冲区内
-		auto totalVertexCount = box.Vertices.size() + grid.Vertices.size() + sphere.Vertices.size() + cylinder.Vertices.size();
-
-		std::vector<Vertex> vertices(totalVertexCount);
-		UINT k = 0;
-		for (size_t i = 0; i < box.Vertices.size(); ++i, ++k)
-		{
-			vertices[k].Pos = box.Vertices[i].Position;
-			vertices[k].Color = XMFLOAT4(DirectX::Colors::DarkGreen);
-
-		}
-		for (size_t i = 0; i < grid.Vertices.size(); ++i, ++k)
-		{
-			vertices[k].Pos = grid.Vertices[i].Position;
-			vertices[k].Color = XMFLOAT4(DirectX::Colors::ForestGreen);
-		}
-		for (size_t i = 0; i < sphere.Vertices.size(); ++i, ++k)
-		{
-			vertices[k].Pos = sphere.Vertices[i].Position;
-			vertices[k].Color = XMFLOAT4(DirectX::Colors::Crimson);
-		}
-		for (size_t i = 0; i < cylinder.Vertices.size(); ++i, ++k)
-		{
-			vertices[k].Pos = cylinder.Vertices[i].Position;
-			vertices[k].Color = XMFLOAT4(DirectX::Colors::SteelBlue);
-		}
-
-		// 索引的缓冲区.
-		std::vector<std::uint16_t> indices;
-		indices.insert(indices.end(), std::begin(box.GetIndices16()), std::end(box.GetIndices16()));
-		indices.insert(indices.end(), std::begin(grid.GetIndices16()), std::end(grid.GetIndices16()));
-		indices.insert(indices.end(), std::begin(sphere.GetIndices16()), std::end(sphere.GetIndices16()));
-		indices.insert(indices.end(), std::begin(cylinder.GetIndices16()), std::end(cylinder.GetIndices16()));
+            // 基于顶点高度上色
+            if (vertices[i].Pos.y < 20.f)
+            {
+                vertices[i].Color = XMFLOAT4(0.45f,0.39f,0.34f,1.0f);
+            }
+            else
+            {
+                vertices[i].Color = XMFLOAT4(1.f,1.f,1.f,1.f);
+            }
+        }
+        std::vector<std::uint16_t> indices = grid.GetIndices16();
 
 
 		// 创建几何体和子几何体，存储绘制所用到的Index、Vertex信息
@@ -258,11 +214,8 @@ bool BoxApp::Initialize()
 		mBoxGeo->IndexFormat = DXGI_FORMAT_R16_UINT;
 		mBoxGeo->IndexBufferByteSize = ibByteSize;
 
-		mBoxGeo->DrawArgs["box"] = boxSubmesh;
 		mBoxGeo->DrawArgs["grid"] = gridSubmesh;
-		mBoxGeo->DrawArgs["sphere"] = sphereSubmesh;
-		mBoxGeo->DrawArgs["cylinder"] = cylinderSubmesh;
-
+	
 
 		// 创建顶点缓冲区.
 
@@ -405,87 +358,22 @@ bool BoxApp::Initialize()
 			)
 		);
 
-        mGeometries["shapeGeo"]=std::move(mBoxGeo);
+        mGeometries["landGeo"]=std::move(mBoxGeo);
 
 	}
 
 	// 构建几何体后就可以Build渲染项了，渲染项可以理解为是几何体的实例化，每个渲染项是场景中的一个物体，比如可能有多个圆台形组成的物体
 	{
-		auto boxRenderItem = std::make_unique<RenderItem>();
-		XMStoreFloat4x4(&boxRenderItem->World, XMMatrixScaling(2.F, 2.F, 2.F)* XMMatrixTranslation(0., 0.5f, 0.0f));
-		boxRenderItem->ObjCBOffset = 0;
-		boxRenderItem->Geo = mGeometries["shapeGeo"].get();
-		boxRenderItem->PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-		boxRenderItem->BaseVertexLocation = boxRenderItem->Geo->DrawArgs["box"].BaseVertexLocation;
-		boxRenderItem->StartIndexLocation = boxRenderItem->Geo->DrawArgs["box"].StartIndexLocation;
-		boxRenderItem->IndexCount = boxRenderItem->Geo->DrawArgs["box"].IndexCount;
+		auto landRenderItem = std::make_unique<RenderItem>();
+		XMStoreFloat4x4(&landRenderItem->World, XMMatrixScaling(2.F, 2.F, 2.F)* XMMatrixTranslation(0., 0.5f, 0.0f));
+		landRenderItem->ObjCBOffset = 0;
+		landRenderItem->Geo = mGeometries["landGeo"].get();
+		landRenderItem->PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+		landRenderItem->BaseVertexLocation = landRenderItem->Geo->DrawArgs["grid"].BaseVertexLocation;
+		landRenderItem->StartIndexLocation = landRenderItem->Geo->DrawArgs["grid"].StartIndexLocation;
+		landRenderItem->IndexCount = landRenderItem->Geo->DrawArgs["grid"].IndexCount;
 
-		mAllRenderItems.push_back(std::move(boxRenderItem));
-
-		auto gridRenderItem = std::make_unique<RenderItem>();
-		gridRenderItem->World = MathHelper::Identity4x4();
-		gridRenderItem->ObjCBOffset = 1;
-		gridRenderItem->PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-		gridRenderItem->Geo = mGeometries["shapeGeo"].get();
-		gridRenderItem->BaseVertexLocation = gridRenderItem->Geo->DrawArgs["grid"].BaseVertexLocation;
-		gridRenderItem->StartIndexLocation = gridRenderItem->Geo->DrawArgs["grid"].StartIndexLocation;
-		gridRenderItem->IndexCount = gridRenderItem->Geo->DrawArgs["grid"].IndexCount;
-
-		mAllRenderItems.push_back(std::move(gridRenderItem));
-
-		// 构建柱体和球体.
-		UINT objCBOffset = 2;
-		for (int i = 0; i < 5; ++i)
-		{
-			auto leftCylRenderItem = std::make_unique<RenderItem>();
-			auto rightCylRenderItem = std::make_unique<RenderItem>();
-			auto leftSphereRenderItem = std::make_unique<RenderItem>();
-			auto rightSphereRenderItem = std::make_unique<RenderItem>();
-
-			XMMATRIX leftCylWorld = XMMatrixTranslation(-5.0f, 1.5f, -10.0f + 5.f * i);
-			XMMATRIX rightCylWorld = XMMatrixTranslation(5.0f, 1.5f, -10.0f + 5.f * i);
-
-			XMMATRIX leftSphereWorld = XMMatrixTranslation(-5.0f, 3.5f, -10.0f + 5.f * i);
-			XMMATRIX rightSphereWorld = XMMatrixTranslation(5.0f, 3.5f, -10.0f + 5.f * i);
-
-			XMStoreFloat4x4(&leftCylRenderItem->World, leftCylWorld);
-			XMStoreFloat4x4(&rightCylRenderItem->World, rightCylWorld);
-			XMStoreFloat4x4(&leftSphereRenderItem->World, leftSphereWorld);
-			XMStoreFloat4x4(&rightSphereRenderItem->World, rightSphereWorld);
-
-			leftCylRenderItem->ObjCBOffset = objCBOffset++;
-			leftCylRenderItem->PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-			leftCylRenderItem->Geo = mGeometries["shapeGeo"].get();
-			leftCylRenderItem->IndexCount = leftCylRenderItem->Geo->DrawArgs["cylinder"].IndexCount;
-			leftCylRenderItem->StartIndexLocation = leftCylRenderItem->Geo->DrawArgs["cylinder"].StartIndexLocation;
-			leftCylRenderItem->BaseVertexLocation = leftCylRenderItem->Geo->DrawArgs["cylinder"].BaseVertexLocation;
-			mAllRenderItems.push_back(std::move(leftCylRenderItem));
-
-			rightCylRenderItem->ObjCBOffset = objCBOffset++;
-			rightCylRenderItem->PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-			rightCylRenderItem->Geo = mGeometries["shapeGeo"].get();
-			rightCylRenderItem->IndexCount = rightCylRenderItem->Geo->DrawArgs["cylinder"].IndexCount;
-			rightCylRenderItem->StartIndexLocation = rightCylRenderItem->Geo->DrawArgs["cylinder"].StartIndexLocation;
-			rightCylRenderItem->BaseVertexLocation = rightCylRenderItem->Geo->DrawArgs["cylinder"].BaseVertexLocation;
-			mAllRenderItems.push_back(std::move(rightCylRenderItem));
-
-			leftSphereRenderItem->ObjCBOffset = objCBOffset++;
-			leftSphereRenderItem->PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-			leftSphereRenderItem->Geo = mGeometries["shapeGeo"].get();
-			leftSphereRenderItem->IndexCount = leftSphereRenderItem->Geo->DrawArgs["sphere"].IndexCount;
-			leftSphereRenderItem->StartIndexLocation = leftSphereRenderItem->Geo->DrawArgs["sphere"].StartIndexLocation;
-			leftSphereRenderItem->BaseVertexLocation = leftSphereRenderItem->Geo->DrawArgs["sphere"].BaseVertexLocation;
-			mAllRenderItems.push_back(std::move(leftSphereRenderItem));
-
-
-			rightSphereRenderItem->ObjCBOffset = objCBOffset++;
-			rightSphereRenderItem->PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-			rightSphereRenderItem->Geo = mGeometries["shapeGeo"].get();
-			rightSphereRenderItem->IndexCount = rightSphereRenderItem->Geo->DrawArgs["sphere"].IndexCount;
-			rightSphereRenderItem->StartIndexLocation = rightSphereRenderItem->Geo->DrawArgs["sphere"].StartIndexLocation;
-			rightSphereRenderItem->BaseVertexLocation = rightSphereRenderItem->Geo->DrawArgs["sphere"].BaseVertexLocation;
-			mAllRenderItems.push_back(std::move(rightSphereRenderItem));
-		}
+		mAllRenderItems.push_back(std::move(landRenderItem));
 
 		// 非透明，添加到对应Pass中
 		for (auto& e : mAllRenderItems)
@@ -1020,36 +908,41 @@ void BoxApp::OnMouseUp(WPARAM btnState, int x, int y)
 
 void BoxApp::OnMouseMove(WPARAM btnState, int x, int y)
 {
-    if((btnState & MK_LBUTTON) != 0)
-    {
-        // Make each pixel correspond to a quarter of a degree.
-        float dx = XMConvertToRadians(0.25f*static_cast<float>(x - mLastMousePos.x));
-        float dy = XMConvertToRadians(0.25f*static_cast<float>(y - mLastMousePos.y));
+	if ((btnState & MK_LBUTTON) != 0)
+	{
+		// Make each pixel correspond to a quarter of a degree.
+		float dx = XMConvertToRadians(0.25f * static_cast<float>(x - mLastMousePos.x));
+		float dy = XMConvertToRadians(0.25f * static_cast<float>(y - mLastMousePos.y));
 
-        // Update angles based on input to orbit camera around box.
-        mTheta += dx;
-        mPhi += dy;
+		// Update angles based on input to orbit camera around box.
+		mTheta += dx;
+		mPhi += dy;
 
-        // Restrict the angle mPhi.
-        mPhi = MathHelper::Clamp(mPhi, 0.1f, MathHelper::Pi - 0.1f);
-    }
-    else if((btnState & MK_RBUTTON) != 0)
-    {
-        // Make each pixel correspond to 0.005 unit in the scene.
-        float dx = 0.005f*static_cast<float>(x - mLastMousePos.x);
-        float dy = 0.005f*static_cast<float>(y - mLastMousePos.y);
+		// Restrict the angle mPhi.
+		mPhi = MathHelper::Clamp(mPhi, 0.1f, MathHelper::Pi - 0.1f);
+	}
+	else if ((btnState & MK_RBUTTON) != 0)
+	{
+		// Make each pixel correspond to 0.2 unit in the scene.
+		float dx = 0.2f * static_cast<float>(x - mLastMousePos.x);
+		float dy = 0.2f * static_cast<float>(y - mLastMousePos.y);
 
-        // Update the camera radius based on input.
-        mRadius += dx - dy;
+		// Update the camera radius based on input.
+		mRadius += dx - dy;
 
-        // Restrict the radius.
-        mRadius = MathHelper::Clamp(mRadius, 3.0f, 15.0f);
-    }
+		// Restrict the radius.
+		mRadius = MathHelper::Clamp(mRadius, 5.0f, 150.0f);
+	}
 
-    mLastMousePos.x = x;
-    mLastMousePos.y = y;
+	mLastMousePos.x = x;
+	mLastMousePos.y = y;
 }
 
+
+float BoxApp::GetHillsHeight(float x, float z) const
+{
+    return 0.3f*(z*sinf(0.1f*x)+x*cosf(0.1f*z));
+}
 
 int WINAPI WinMain(HINSTANCE hInstance,HINSTANCE prevInstance,PSTR cmdLine,int showCmd)
 {
