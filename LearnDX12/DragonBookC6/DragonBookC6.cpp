@@ -717,8 +717,8 @@ void BoxApp::Update(const GameTimer& gt)
     {
 		// 更新相机位置
 		float x = mRadius * sinf(mPhi) * cosf(mTheta);
-		float y = mRadius * sinf(mPhi) * sinf(mTheta);
-		float z = mRadius * cosf(mPhi);
+		float z = mRadius * sinf(mPhi) * sinf(mTheta);
+		float y = mRadius * cosf(mPhi);
 
 		// View matrix.
 		XMVECTOR pos = XMVectorSet(x, y, z, 1.0f);
