@@ -115,7 +115,6 @@ private:
 private:
    
     ComPtr<ID3D12RootSignature> mRootSignature  = nullptr;
-    ComPtr<ID3D12DescriptorHeap> mCbvHeap       = nullptr;
 	UINT mPassCbvOffset;
 
     // 存储所有渲染项.
@@ -391,118 +390,35 @@ bool BoxApp::Initialize()
             );
         }
     }
-	// 创建常量缓冲区堆
+	// 不再创建常量缓冲区堆，直接绑定CBV（即直接用根描述符而非描述符表） 
 	{
-		UINT objCount = (UINT)mOpaqueRenderItems.size();
-		mPassCbvOffset = objCount * gNumFrameResources;
-		D3D12_DESCRIPTOR_HEAP_DESC heapDesc;
-		heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-		// 描述符个数等于物体数量*Frame数量，每个Frame还有Pass数据，所以额外加1
-		heapDesc.NumDescriptors = (objCount + 1) * gNumFrameResources;
-		// Shader可见，因为需要读取
-		heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-		heapDesc.NodeMask = 0;
-
-		ThrowIfFailed(md3dDevice->CreateDescriptorHeap(
-			&heapDesc,
-			IID_PPV_ARGS(mCbvHeap.GetAddressOf())
-		));
+		
 	}
     
     // 初始化常量缓冲区View.
     {
-       // 由于有多个FrameResource,每个FrameResource内、每个物体的有自己的ConstantBufferView。
-        // 所有的FrameResource内的物体偏移是相同的，所以偏移信息存在物体中。
-
-		// 创建view需要找到GPU的缓冲区地址，以及CPU的描述符地址
-		UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
-		UINT objCount = (UINT)mOpaqueRenderItems.size();
-
-		for (int frameIndex = 0; frameIndex < gNumFrameResources; ++frameIndex)
-		{
-			auto objectCB = mFrameResources[frameIndex]->ObjectsCB->Resource();
-
-			for (UINT i = 0; i < objCount; ++i)
-			{
-				// 第i个物体的缓冲区地址.
-				D3D12_GPU_VIRTUAL_ADDRESS cbAddress = objectCB->GetGPUVirtualAddress();
-				cbAddress += i* objCBByteSize;
-
-				D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
-				cbvDesc.SizeInBytes = objCBByteSize;
-				cbvDesc.BufferLocation = cbAddress;
-
-				// 描述符地址
-				D3D12_CPU_DESCRIPTOR_HANDLE cbHandle = mCbvHeap->GetCPUDescriptorHandleForHeapStart();
-				cbHandle.ptr+=(frameIndex*objCount + i)* mCbvUavDescriptorSize;
-				
-				// 第i个物体的描述符地址.
-				md3dDevice->CreateConstantBufferView(
-					&cbvDesc,cbHandle
-				);
-				//
-			}
-		}
-
-		// Pass constant.
-		for (int frameIndex = 0; frameIndex < gNumFrameResources; ++frameIndex)
-		{
-			auto PassCB = mFrameResources[frameIndex]->PassCB->Resource();
-			UINT passCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(PassConstants));
-			D3D12_GPU_VIRTUAL_ADDRESS passAddress = PassCB->GetGPUVirtualAddress();
-
-			D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
-			cbvDesc.BufferLocation = passAddress;
-			cbvDesc.SizeInBytes = passCBByteSize;
-
-			D3D12_CPU_DESCRIPTOR_HANDLE cbHandle = mCbvHeap->GetCPUDescriptorHandleForHeapStart();
-			cbHandle.ptr+=(mPassCbvOffset+frameIndex)*mCbvUavDescriptorSize;
-
-			md3dDevice->CreateConstantBufferView(&cbvDesc,cbHandle);
-
-		}
+        // 不需要与cbvHeap绑定，需要时直接设置BufferLocation即可
     }
     
     // 初始化RootSignature，把常量缓冲区绑定到GPU上供Shader读取.
     // 把着色器当作一个函数，root signature就是函数签名，资源是参数数据.
     {
         // root signature -> root parameter -> type/table -> range.
-        D3D12_DESCRIPTOR_RANGE descRange;
-        descRange.NumDescriptors = 1;;
-        descRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
-        // 思考，这里是指r(0)吗？
-        // 这里必须知名base shader register，否则会导致和shader不匹配.
-        descRange.BaseShaderRegister = 0;
-        descRange.RegisterSpace = 0;
-        descRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-        
-        
-        D3D12_ROOT_DESCRIPTOR_TABLE  rootDescTable;
-        rootDescTable.pDescriptorRanges = &descRange;
-        rootDescTable.NumDescriptorRanges = 1;
-
-        D3D12_DESCRIPTOR_RANGE passDescRange;
-        passDescRange.NumDescriptors = 1;
-        passDescRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
-        // 思考,这里RegisterSpace意义还不清楚，下面那个对应着色器中的b0、b1之类的.
-        passDescRange.RegisterSpace = 0;
-        passDescRange.BaseShaderRegister=1;
-        passDescRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-        D3D12_ROOT_DESCRIPTOR_TABLE passDescTable;
-        passDescTable.pDescriptorRanges =&passDescRange;
-        passDescTable.NumDescriptorRanges = 1;
         
         D3D12_ROOT_PARAMETER slotRootParameter[2];
         // object 
-        slotRootParameter[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        slotRootParameter[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
         slotRootParameter[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        slotRootParameter[0].DescriptorTable = rootDescTable;
+        slotRootParameter[0].Descriptor.RegisterSpace = 0;
+        slotRootParameter[0].Descriptor.ShaderRegister = 0;
+        // 暂时不需要填充Descriptor，绘制的时候设置即可.
         // pass
-        slotRootParameter[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        slotRootParameter[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
         slotRootParameter[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        slotRootParameter[1].DescriptorTable = passDescTable;
-        
+		slotRootParameter[1].Descriptor.RegisterSpace = 0;
+		slotRootParameter[1].Descriptor.ShaderRegister = 1;
+		// 暂时不需要填充Descriptor，绘制的时候设置即可.
+
         
         // 创建RootSignature.要使用Blob
         // d3d12规定，必须将根签名的描述布局进行序列化，才可以传入CreateRootSignature方法.
@@ -526,17 +442,12 @@ bool BoxApp::Initialize()
 
 
         // 绘制时调用的逻辑，设置根签名以及使用的描述符资源，本例中使用描述符表。描述符表存在描述符堆中.
-        mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
-        // 使用描述符表，要设置描述符堆以及
-        ID3D12DescriptorHeap* descriptorHeap[] = {mCbvHeap.Get()};
-        mCommandList->SetDescriptorHeaps(_countof(descriptorHeap),descriptorHeap);
-        // 偏移到此次绘制调用的CBV处(因为用一个大的堆来存储所有物体的常量缓冲区.)
-        D3D12_GPU_DESCRIPTOR_HANDLE cbv = mCbvHeap->GetGPUDescriptorHandleForHeapStart();
-        
-        mCommandList->SetGraphicsRootDescriptorTable(
-            0,
-            cbv
-        );
+        //mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
+        // 使用根描述符,就不需要设置Heap了，直接设置CBV即可
+	   /* mCommandList->SetGraphicsRootConstantBufferView(
+			0,
+			cbv
+		);*/
     }
 
     // 编译着色器.
@@ -841,14 +752,10 @@ void BoxApp::Draw(const GameTimer& gt)
     mCommandList->OMSetRenderTargets(1,&CurrentBackBufferDescriptor(),true,&DepthStencilDescriptor());
 
     // 描述符相关.用来更新常量缓冲区
-    ID3D12DescriptorHeap* descHeaps[] =  {mCbvHeap.Get()};
-    mCommandList->SetDescriptorHeaps(_countof(descHeaps),descHeaps);
     mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
 
     int passCbvIndex = mPassCbvOffset + mCurrentFrameIndex;
-    auto passCbvHandle = mCbvHeap->GetGPUDescriptorHandleForHeapStart();
-    passCbvHandle.ptr +=passCbvIndex*mCbvUavDescriptorSize;
-    mCommandList->SetGraphicsRootDescriptorTable(1,passCbvHandle);
+    mCommandList->SetGraphicsRootConstantBufferView(1,mCurrentFrameResource->PassCB->Resource()->GetGPUVirtualAddress());
 
     // 绘制一个物体需要绑定两个buffer、设置图元类型、设置常量缓冲区等，把这些绘制一个物体需要的数据整合起来，可以作为RenderItem.
 	// 绘制物体
@@ -862,9 +769,9 @@ void BoxApp::Draw(const GameTimer& gt)
 			mCommandList->IASetVertexBuffers(0,1,&ri->Geo->VertexBufferView());
 			mCommandList->IASetIndexBuffer(&ri->Geo->IndexBufferView());
 			mCommandList->IASetPrimitiveTopology(ri->PrimitiveTopology);
-			D3D12_GPU_DESCRIPTOR_HANDLE cbvHandle =  mCbvHeap->GetGPUDescriptorHandleForHeapStart();
-			cbvHandle.ptr+= (ri->ObjCBOffset+mOpaqueRenderItems.size()*mCurrentFrameIndex)*mCbvUavDescriptorSize;
-			mCommandList->SetGraphicsRootDescriptorTable(0, cbvHandle);
+            D3D12_GPU_VIRTUAL_ADDRESS cbAddress = mCurrentFrameResource->ObjectsCB->Resource()->GetGPUVirtualAddress();
+            cbAddress+=(ri->ObjCBOffset )*objCBByteSize;
+			mCommandList->SetGraphicsRootConstantBufferView(0, cbAddress);
 			mCommandList->DrawIndexedInstanced(ri->IndexCount,1,ri->StartIndexLocation,ri->BaseVertexLocation,0);
             //mCommandList->DrawIndexedInstanced(3,1,0,0,0);
 		}
