@@ -150,6 +150,9 @@ private:
     XMFLOAT3 mEyePos;
 
     POINT mLastMousePos;
+
+    // 是否开启线框模式
+    bool mIsWireframe = false;
 };
 
 BoxApp::BoxApp(HINSTANCE hinstance)
@@ -684,6 +687,14 @@ bool BoxApp::Initialize()
         ThrowIfFailed( md3dDevice->CreateGraphicsPipelineState(
             &pipelineStateDesc,IID_PPV_ARGS(&mPSOs["defaultPSO"])
         ));
+
+        // 创建线框模式pso.
+
+        rasterizerDesc.FillMode = D3D12_FILL_MODE_WIREFRAME;
+        pipelineStateDesc.RasterizerState = rasterizerDesc;
+		ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
+			&pipelineStateDesc, IID_PPV_ARGS(&mPSOs["wireframePSO"])
+		));
         
         
     }
@@ -711,6 +722,17 @@ void BoxApp::OnResize()
 
 void BoxApp::Update(const GameTimer& gt)
 {
+    // 更新键盘输入
+    {
+        if (GetAsyncKeyState('1') & 0x8000)
+        {
+            mIsWireframe = true;
+        }
+        else
+        {
+            mIsWireframe = false;
+        }
+    }
     // 更新相机
     {
 		// 更新相机位置
@@ -817,8 +839,14 @@ void BoxApp::Draw(const GameTimer& gt)
     //FlushCommandQueue();
     // cmd相关Reset
     mDirectCmdListAlloc->Reset();   // cmdlist 执行完后才能重置,即FlushCommandQuene之后.
-    mCommandList->Reset(mDirectCmdListAlloc.Get(),mPSOs["defaultPSO"].Get());  // 传入Queue后就可以重置.
-
+    if (mIsWireframe)
+    {
+        mCommandList->Reset(mDirectCmdListAlloc.Get(),mPSOs["wireframePSO"].Get());
+    }
+    else
+    { 
+        mCommandList->Reset(mDirectCmdListAlloc.Get(),mPSOs["defaultPSO"].Get());  // 传入Queue后就可以重置.
+    }
     mCommandList->RSSetViewports(1,&mScreenViewport);
     mCommandList->RSSetScissorRects(1,&mScissorRect);
 
