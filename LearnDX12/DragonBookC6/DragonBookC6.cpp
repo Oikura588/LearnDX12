@@ -22,14 +22,22 @@ static const  int gNumFrameResources=1;
 struct Vertex
 {
     XMFLOAT3 Pos;
-    XMFLOAT4 Color;
+    XMFLOAT3 Normal;
 };
 // 常量缓冲区.每个物体有自己的transform信息.
 struct ObjectConstants
 {
     XMFLOAT4X4 World = MathHelper::Identity4x4();
 };
-
+// 材质常量缓冲区
+struct MaterialConstants
+{
+    DirectX::XMFLOAT4 DiffuseAlbedo;
+    DirectX::XMFLOAT3 FresnelR0;
+    float Roughness;
+    // 纹理贴图章节中用到
+    DirectX::XMFLOAT4X4 MaterialTransform;
+};
 // 存储绘制一个物体需要的数据的结构，随着不同的程序有所差别.
 struct RenderItem
 {
@@ -44,6 +52,9 @@ struct RenderItem
     UINT ObjCBOffset = -1;
     // 几何体的引用.几何体中存储了VertexBuffer和IndexBuffer.
     MeshGeometry* Geo = nullptr;
+
+    // 材质
+    Material* Mat = nullptr;
     // 图元类型
     D3D12_PRIMITIVE_TOPOLOGY PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
     // DrawInstance 的参数
@@ -78,7 +89,7 @@ struct PassConstants
 class FrameResource
 {
 public:
-    FrameResource(ID3D12Device* device,UINT passCount,UINT objectCount,UINT waveVertexCount)
+    FrameResource(ID3D12Device* device,UINT passCount,UINT objectCount,UINT waveVertexCount,UINT materialCount)
     {
         device->CreateCommandAllocator(
             D3D12_COMMAND_LIST_TYPE_DIRECT,
@@ -87,6 +98,8 @@ public:
         ObjectsCB = std::make_unique<UploadBuffer<ObjectConstants>>(device,objectCount,true);
         PassCB = std::make_unique<UploadBuffer<PassConstants>>(device,passCount,true);
         mWavesVB = std::make_unique<UploadBuffer<Vertex>>(device, waveVertexCount,false);
+        mMaterialCB = std::make_unique<UploadBuffer<MaterialConstants>>(device,materialCount,true);
+        
     }
     FrameResource(const FrameResource& rhs) = delete;
     FrameResource& operator=(const FrameResource& rhs) = delete;
@@ -100,6 +113,9 @@ public:
 
     // 波浪使用动态顶点缓冲区，类似上面的Constant Buffer.
     std::unique_ptr<UploadBuffer<Vertex>> mWavesVB = nullptr;
+    
+    // 材质的缓冲区
+    std::unique_ptr<UploadBuffer<MaterialConstants>> mMaterialCB = nullptr;
 
     // 每帧需要有自己的fence，来判断GPU与CPU的帧之间的同步.
     UINT64 Fence = 0;
@@ -367,7 +383,11 @@ private:
 
     POINT mLastMousePos;
 
+    // 生成Land
     float GetHillsHeight(float x,float z) const;
+    
+    XMFLOAT3 GetHillsNormal(float x,float z) const;
+
 
     // 波浪
     std::unique_ptr<Waves> mWaves;
@@ -377,6 +397,9 @@ private:
 
     // 是否开启线框模式
     bool mIsWireframe = false;
+
+    // 材质
+    std::unordered_map<std::string,std::unique_ptr<Material>> mMaterials;
 };
 
 BoxApp::BoxApp(HINSTANCE hinstance)
@@ -398,6 +421,26 @@ bool BoxApp::Initialize()
     // 重置命令列表来执行初始化命令
     ThrowIfFailed( mCommandList->Reset(mDirectCmdListAlloc.Get(),nullptr));
     // 初始化.
+    
+    // 创建材质
+    {
+        auto grass = std::make_unique<Material>();
+        grass->Name = "grass";
+        grass->MatCBIndex = 0;
+        grass->DiffuseAlbedo = XMFLOAT4(0.2f,0.6f,0.2f,1.0f);
+        grass->FresnelR0 = XMFLOAT3(0.01f,0.01f,0.01f);
+        grass->Roughness = 0.125f;
+
+        auto water = std::make_unique<Material>();
+		grass->MatCBIndex = 1;
+		grass->DiffuseAlbedo = XMFLOAT4(0.f, 0.2f, 0.6f, 1.0f);
+		grass->FresnelR0 = XMFLOAT3(0.1f, 0.1f, 0.1f);
+		grass->Roughness = 0.0f;
+
+        mMaterials["grass"] = std::move(grass);
+        mMaterials["water"] = std::move(water);
+        
+    }
 	// Build Geometry.和渲染没什么关系了，就是创建buffer并保存起来，绘制的时候用
 	{
 		// 使用工具函数创建顶点和索引的数组
@@ -688,6 +731,7 @@ bool BoxApp::Initialize()
 		landRenderItem->BaseVertexLocation = landRenderItem->Geo->DrawArgs["grid"].BaseVertexLocation;
 		landRenderItem->StartIndexLocation = landRenderItem->Geo->DrawArgs["grid"].StartIndexLocation;
 		landRenderItem->IndexCount = landRenderItem->Geo->DrawArgs["grid"].IndexCount;
+        landRenderItem->Mat = mMaterials["grass"].get();
 
 		mAllRenderItems.push_back(std::move(landRenderItem));
 
@@ -700,6 +744,8 @@ bool BoxApp::Initialize()
 		waveRenderItem->StartIndexLocation = waveRenderItem->Geo->DrawArgs["grid"].StartIndexLocation;
 		waveRenderItem->IndexCount = waveRenderItem->Geo->DrawArgs["grid"].IndexCount;
         mWavesRitem = waveRenderItem.get();
+        waveRenderItem->Mat = mMaterials["water"].get();
+
         mAllRenderItems.push_back(std::move(waveRenderItem));
 
 		// 非透明，添加到对应Pass中
@@ -714,8 +760,7 @@ bool BoxApp::Initialize()
         for(int i=0;i<gNumFrameResources;++i)
         {
             mFrameResources.push_back(
-                std::make_unique<FrameResource>(md3dDevice.Get(),1,mAllRenderItems.size(),mWaves->VertexCount())
-            );
+                std::make_unique<FrameResource>(md3dDevice.Get(),1,mAllRenderItems.size(),mWaves->VertexCount(), mMaterials.size()));
         }
     }
 	// 不再创建常量缓冲区堆，直接绑定CBV（即直接用根描述符而非描述符表） 
@@ -733,19 +778,27 @@ bool BoxApp::Initialize()
     {
         // root signature -> root parameter -> type/table -> range.
         
-        D3D12_ROOT_PARAMETER slotRootParameter[2];
+        D3D12_ROOT_PARAMETER slotRootParameter[3];
         // object 
         slotRootParameter[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
         slotRootParameter[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
         slotRootParameter[0].Descriptor.RegisterSpace = 0;
         slotRootParameter[0].Descriptor.ShaderRegister = 0;
         // 暂时不需要填充Descriptor，绘制的时候设置即可.
-        // pass
+
+		// 材质
         slotRootParameter[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
         slotRootParameter[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-		slotRootParameter[1].Descriptor.RegisterSpace = 0;
-		slotRootParameter[1].Descriptor.ShaderRegister = 1;
+        slotRootParameter[1].Descriptor.RegisterSpace = 0;
+        slotRootParameter[1].Descriptor.ShaderRegister = 1;
+
+        // pass
+        slotRootParameter[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        slotRootParameter[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+		slotRootParameter[2].Descriptor.RegisterSpace = 0;
+		slotRootParameter[2].Descriptor.ShaderRegister = 2;
 		// 暂时不需要填充Descriptor，绘制的时候设置即可.
+
 
         
         // 创建RootSignature.要使用Blob
@@ -841,7 +894,7 @@ bool BoxApp::Initialize()
     {
         mInputLayout = {
             {"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0,0,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0,},
-            {"COLOR",0,DXGI_FORMAT_R32G32B32A32_FLOAT,0,12,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0}
+            {"NORMAL",0,DXGI_FORMAT_R32G32B32_FLOAT,0,12,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0}
         };
     }
 
@@ -1077,6 +1130,26 @@ void BoxApp::Update(const GameTimer& gt)
 		}
 		mWavesRitem->Geo->VertexBufferGPU = currWaveVB->Resource();
     }
+    // 更新材质
+    {
+        auto currMaterialCB = mCurrentFrameResource->mMaterialCB.get();
+        for (auto& e : mMaterials)
+        {
+            Material* mat = e.second.get();
+            if(mat->NumFramesDirty>0)
+            {
+                MaterialConstants matConstants;
+                matConstants.DiffuseAlbedo = mat->DiffuseAlbedo;
+                matConstants.FresnelR0 = mat->FresnelR0;
+                matConstants.MaterialTransform = mat->MatTransform;
+                matConstants.Roughness = mat->Roughness;
+
+                currMaterialCB->CopyData(mat->MatCBIndex,matConstants);
+                mat->NumFramesDirty--;
+            }
+        }
+    }
+
 }
 
 void BoxApp::Draw(const GameTimer& gt)
@@ -1115,23 +1188,30 @@ void BoxApp::Draw(const GameTimer& gt)
     mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
 
     int passCbvIndex = mPassCbvOffset + mCurrentFrameIndex;
-    mCommandList->SetGraphicsRootConstantBufferView(1,mCurrentFrameResource->PassCB->Resource()->GetGPUVirtualAddress());
+    mCommandList->SetGraphicsRootConstantBufferView(2,mCurrentFrameResource->PassCB->Resource()->GetGPUVirtualAddress());
 
     // 绘制一个物体需要绑定两个buffer、设置图元类型、设置常量缓冲区等，把这些绘制一个物体需要的数据整合起来，可以作为RenderItem.
 	// 绘制物体
 	{
 		UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
+		UINT matCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(MaterialConstants));
+
 		auto objCB = mCurrentFrameResource->ObjectsCB->Resource();
 
 		for (size_t i = 0; i < mOpaqueRenderItems.size(); ++i)
 		{
 			auto ri = mOpaqueRenderItems[i];
+            // 更新object常量
 			mCommandList->IASetVertexBuffers(0,1,&ri->Geo->VertexBufferView());
 			mCommandList->IASetIndexBuffer(&ri->Geo->IndexBufferView());
 			mCommandList->IASetPrimitiveTopology(ri->PrimitiveTopology);
             D3D12_GPU_VIRTUAL_ADDRESS cbAddress = mCurrentFrameResource->ObjectsCB->Resource()->GetGPUVirtualAddress();
             cbAddress+=(ri->ObjCBOffset )*objCBByteSize;
 			mCommandList->SetGraphicsRootConstantBufferView(0, cbAddress);
+			// 设置材质
+            D3D12_GPU_VIRTUAL_ADDRESS matAddress = mCurrentFrameResource->mMaterialCB->Resource()->GetGPUVirtualAddress();
+            matAddress+=(ri->Mat->MatCBIndex)* matCBByteSize;
+            mCommandList->SetGraphicsRootConstantBufferView(1,matAddress);
 			mCommandList->DrawIndexedInstanced(ri->IndexCount,1,ri->StartIndexLocation,ri->BaseVertexLocation,0);
             //mCommandList->DrawIndexedInstanced(3,1,0,0,0);
 		}
@@ -1209,6 +1289,21 @@ void BoxApp::OnMouseMove(WPARAM btnState, int x, int y)
 float BoxApp::GetHillsHeight(float x, float z) const
 {
     return 0.3f*(z*sinf(0.1f*x)+x*cosf(0.1f*z));
+}
+
+XMFLOAT3 BoxApp::GetHillsNormal(float x, float z) const
+{
+    // n= (-df/dx,1,-df/dz)
+    XMFLOAT3 n(
+        -0.03f*z*cosf(0.1f*x) - 0.3f*cosf(0.1f*z),
+        1.0f,
+        -0.3f*sinf(0.1f*x) + 0.03f*x*sinf(0.1f*z)
+    );
+
+    XMVECTOR unitNormal = XMVector3Normalize(XMLoadFloat3(&n));
+    XMStoreFloat3(&n,unitNormal);
+
+    return n;
 }
 
 int WINAPI WinMain(HINSTANCE hInstance,HINSTANCE prevInstance,PSTR cmdLine,int showCmd)

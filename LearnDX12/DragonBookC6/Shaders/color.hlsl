@@ -4,12 +4,38 @@
 // Transforms and colors geometry.
 //***************************************************************************************
 
+// 光源数量
+#ifndef NUM_DIR_LIGHTS
+	#define NUM_DIR_LIGHTS 1
+#endif 
+
+#ifndef NUM_POINT_LIGHTS
+	#define NUM_POINT_LIGHTS 0
+#endif
+
+#ifndef NUM_SPOT_LIGHTS
+	#define NUM_SPOT_LIGHTS 0
+#endif
+
+#include "LightingUtils.hlsl"
+
+// object constant.
 cbuffer cbPerObject : register(b0)
 {
   float4x4 gWorld; 
 };
+
+// material constant.
+cbuffer cbMaterial : register(b1)
+{
+    float4 gDiffuseAlbedo;
+    float3 gFresnelR0;
+    float gRoughness;
+    float4x4 gMatTransform;
+};
+
 // pass constant.
-cbuffer cbPass : register(b1)
+cbuffer cbPass : register(b2)
 {
   float4x4 gView;
   float4x4 gInvView;
@@ -25,11 +51,15 @@ cbuffer cbPass : register(b1)
   float    gFarZ;
   float    gTotalTime;
   float    gDeltaTime;
+    
+  // 光源
+    Light gLights[MaxLights];
 }
 
 struct VertexIn
 {
   float3 PosL  : POSITION;
+  float3 Normal : NORMAL;
   float4 Color : COLOR;
 };
 
