@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <DirectXMath.h>
 #include <vector>
+#include <string>
 
 #include "MathHelper.h"
 
@@ -71,5 +72,8 @@ public:
     static void Subdivide(MeshData& meshData);
 
     static Vertex MidPoint(const Vertex& v0,const Vertex& v1);
-    
+
+    // 加载模型
+    static MeshData LoadModel(std::string path);
+
 };
