@@ -5,6 +5,13 @@
 #include "../Common/UploadBuffer.h"
 #include "../Common/GeometryGenerator.h"
 #include <DirectXColors.h>
+#include <malloc.h>
+#include <ppl.h>
+#include <algorithm>
+#include <vector>
+#include <cassert>
+
+
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
 using namespace DirectX::PackedVector;
@@ -134,7 +141,7 @@ private:
     float mK3 = 0.0f;
    
     float mTimeStep = 0.0f;
-    float mSpetialStep = 0.0f;
+    float mSpatialStep = 0.0f;
 
     std::vector<DirectX::XMFLOAT3> mPrevSolution;
     std::vector<DirectX::XMFLOAT3> mCurrSolution;
@@ -151,12 +158,21 @@ Waves::Waves(int m, int n, float dx, float dt, float speed, float damping)
 
     mTimeStep = dt;
     // dx应该是网格半径？
-    mSpetialStep = dx;
+    mSpatialStep = dx;
 
     mPrevSolution.resize(mVertexCount);
     mCurrSolution.resize(mVertexCount);
     mNormals.resize(mVertexCount);
     mTangentX.resize(mVertexCount);
+
+    // 更新参数
+    // 思考，这里的参数是有什么特定的公式吗
+	float d = damping * dt + 2.0f;
+	float e = (speed * speed) * (dt * dt) / (dx * dx);
+	mK1 = (damping * dt - 2.0f) / d;
+	mK2 = (4.0f - 8.0f * e) / d;
+	mK3 = (2.0f * e) / d;
+
 
     // 中心长度
     float halfWeight = (n-1)*dx/2.f;
@@ -199,22 +215,100 @@ int Waves::TriangleCount()
 
 float Waves::Width()
 {
-    return mSpetialStep *(mNumRows-1);
+    return mSpatialStep *(mNumRows-1);
 }
 
 float Waves::Depth()
 {
-    return mSpetialStep *(mNumCols-1);
+    return mSpatialStep *(mNumCols-1);
 }
 
 void Waves::Update(float dt)
 {
+	static float t = 0;
 
+	// Accumulate time.
+	t += dt;
+
+	// Only update the simulation at the specified time step.
+	if (t >= mTimeStep)
+	{
+		// Only update interior points; we use zero boundary conditions.
+		//concurrency::parallel_for(1, mNumRows - 1, [this](int i)
+			for(int i = 1; i < mNumRows-1; ++i)
+			{
+				for (int j = 1; j < mNumCols - 1; ++j)
+				{
+					// After this update we will be discarding the old previous
+					// buffer, so overwrite that buffer with the new update.
+					// Note how we can do this inplace (read/write to same element) 
+					// because we won't need prev_ij again and the assignment happens last.
+
+					// Note j indexes x and i indexes z: h(x_j, z_i, t_k)
+					// Moreover, our +z axis goes "down"; this is just to 
+					// keep consistent with our row indices going down.
+					float newY = mK1 * mPrevSolution[i * mNumCols + j].y +
+						mK2 * mCurrSolution[i * mNumCols + j].y +
+						mK3 * (mCurrSolution[(i + 1) * mNumCols + j].y +
+							mCurrSolution[(i - 1) * mNumCols + j].y +
+							mCurrSolution[i * mNumCols + j + 1].y +
+							mCurrSolution[i * mNumCols + j - 1].y);
+                    float deltaY = newY - mPrevSolution[i*mNumCols+j].y;
+
+					mPrevSolution[i * mNumCols + j].y = newY;
+                    printf("%F",deltaY);
+				}
+			}
+            //);
+
+		// We just overwrote the previous buffer with the new data, so
+		// this data needs to become the current solution and the old
+		// current solution becomes the new previous solution.
+		std::swap(mPrevSolution, mCurrSolution);
+
+		t = 0.0f; // reset time
+
+		//
+		// Compute normals using finite difference scheme.
+		//
+		//concurrency::parallel_for(1, mNumRows - 1, [this](int i)
+			for(int i = 1; i < mNumRows - 1; ++i)
+			{
+				for (int j = 1; j < mNumCols - 1; ++j)
+				{
+					float l = mCurrSolution[i * mNumCols + j - 1].y;
+					float r = mCurrSolution[i * mNumCols + j + 1].y;
+					float t = mCurrSolution[(i - 1) * mNumCols + j].y;
+					float b = mCurrSolution[(i + 1) * mNumCols + j].y;
+					mNormals[i * mNumCols + j].x = -r + l;
+					mNormals[i * mNumCols + j].y = 2.0f * mSpatialStep;
+					mNormals[i * mNumCols + j].z = b - t;
+
+					XMVECTOR n = XMVector3Normalize(XMLoadFloat3(&mNormals[i * mNumCols + j]));
+					XMStoreFloat3(&mNormals[i * mNumCols + j], n);
+
+					mTangentX[i * mNumCols + j] = XMFLOAT3(2.0f * mSpatialStep, r - l, 0.0f);
+					XMVECTOR T = XMVector3Normalize(XMLoadFloat3(&mTangentX[i * mNumCols + j]));
+					XMStoreFloat3(&mTangentX[i * mNumCols + j], T);
+				}
+			}
+            //);
+	}
 }
 
 void Waves::Disturb(int i, int j, float magnitude)
 {
+    // 边界不进行disturb
+    assert(i>1 && j<mNumRows-2);
+    assert(j>1&&j<mNumCols-2);
 
+    // 指定点的周围四个顶点往上移动.
+    float halfMag = 0.5*magnitude;
+    mCurrSolution[i*mNumCols+j].y += magnitude;
+    mCurrSolution[i*mNumCols+j+1].y += halfMag;
+    mCurrSolution[i*mNumCols+j-1].y += halfMag;
+    mCurrSolution[(i+1)*mNumCols+j].y +=halfMag;
+    mCurrSolution[(i-1)*mNumCols+j].y += halfMag;
 }
 
 class BoxApp : public D3DApp
@@ -491,7 +585,7 @@ bool BoxApp::Initialize()
 
 
         // 创建 waves 的索引缓冲区
-        mWaves = std::make_unique<Waves>(128,128,1.f,0.3f,4.f,0.2f);
+        mWaves = std::make_unique<Waves>(128,128,1.f,0.03f,4.f,0.2f);
         indices.resize(3 * mWaves->TriangleCount());
         //std::vector<std::uint16_t> indices();
         int m = mWaves->RowCount();
@@ -937,13 +1031,13 @@ void BoxApp::Update(const GameTimer& gt)
     {
         // 每隔一段时间，生成一个随机的波浪
         static float t_base = 0.0f;
-        if ((mTimer.TotalTime() - t_base) >= 0.25f)
+        if ((mTimer.TotalTime() - t_base) >= 0.25)
         {
-            t_base+=0.25f;
-            int i = MathHelper::Rand(4,mWaves->RowCount()-1);
-            int j = MathHelper::Rand(4,mWaves->ColumnCount()-1);
+            t_base+=0.25;
+            int i = MathHelper::Rand(4,mWaves->RowCount()-5);
+            int j = MathHelper::Rand(4,mWaves->ColumnCount()-5);
 
-            float r = MathHelper::RandF(0.2f,0.5f);
+            float r = MathHelper::RandF(0.2,0.5f);
             mWaves->Disturb(i,j,r);
             
         }
