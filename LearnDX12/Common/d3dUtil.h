@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <windows.h>
 #include <wrl.h>
@@ -21,6 +21,8 @@
 #include <unordered_map>
 #include <shlobj.h>
 #include <strsafe.h>
+
+#include "MathHelper.h"
 
 inline std::wstring AnsiToWString(const std::string& str)
 {
@@ -136,6 +138,24 @@ struct MeshGeometry
         ibv.Format = IndexFormat;
         return ibv;
     }
+};
+
+// 材质
+struct Material 
+{
+    // 便于查找调试
+    std::string Name;
+
+    // 材质的常量缓冲区索引
+    int MatCBIndex = -1;
+
+    int NumFramesDirty = 0;
+
+    // 材质参数
+    DirectX::XMFLOAT4 DiffuseAlbedo = {1.0f,1.0f,1.0f,1.0f};
+    DirectX::XMFLOAT3 FresnelR0 = {0.01,0.01f,0.01f};
+    float Roughness = 0.25f;
+    DirectX::XMFLOAT4X4 MatTransform = MathHelper::Identity4x4();
 };
 
 

@@ -37,7 +37,25 @@ public:
         );
         return I;
     }
-    
+
+    static DirectX::XMVECTOR ComputeNormal(DirectX::FXMVECTOR p0, DirectX::FXMVECTOR p1, DirectX::FXMVECTOR p2)
+    {
+        using namespace DirectX;
+        DirectX::XMVECTOR u = p1 - p0;
+        DirectX::XMVECTOR v = p2 - p0;
+
+        return XMVector3Normalize(XMVector3Cross(u,v));
+    }
+
+    static DirectX::XMMATRIX InverseTranspose(DirectX::CXMMATRIX M)
+    {
+		using namespace DirectX;
+        DirectX::XMMATRIX A = M ;
+        // 平移项清零。因为只有点类才需要平移变换，此处的逆转矩阵只是为了变化法向量
+        A.r[3] = XMVectorSet(0.F,0.F,0.F,1.F);
+        DirectX::XMVECTOR det = XMMatrixDeterminant(A);
+        return XMMatrixTranspose(XMMatrixInverse(&det,A));
+    }
     static const float Pi;
     static const float Infinity;
 };
