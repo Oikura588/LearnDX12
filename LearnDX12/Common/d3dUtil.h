@@ -158,6 +158,16 @@ struct Material
     DirectX::XMFLOAT4X4 MatTransform = MathHelper::Identity4x4();
 };
 
+// 光源
+struct Light
+{
+    DirectX::XMFLOAT3 Strength = {0.5f,0.5f,0.5f};  // 光源的颜色 
+    float FalloffStart = 1.0f;                      // 使用范围             点光源     聚光灯
+    DirectX::XMFLOAT3 Direction ={0.f,-1.0f,0.f};   // 适用范围     方向光             聚光灯
+    float FalloffEnd = 10.0f;                       //                     点光       聚光灯
+    DirectX::XMFLOAT3 Position ={0.f,0.f,0.f};      //                     点光       聚光灯
+    float SpotPower = 64.0f;                        //                                聚光灯
+};
 
 // DxException类
 
