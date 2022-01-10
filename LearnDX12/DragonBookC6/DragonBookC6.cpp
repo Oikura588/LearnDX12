@@ -71,7 +71,7 @@ struct PassConstants
 class FrameResource
 {
 public:
-    FrameResource(ID3D12Device* device,UINT passCount,UINT objectCount)
+    FrameResource(ID3D12Device* device,UINT passCount,UINT objectCount,UINT waveVertexCount)
     {
         device->CreateCommandAllocator(
             D3D12_COMMAND_LIST_TYPE_DIRECT,
@@ -79,6 +79,7 @@ public:
         );
         ObjectsCB = std::make_unique<UploadBuffer<ObjectConstants>>(device,objectCount,true);
         PassCB = std::make_unique<UploadBuffer<PassConstants>>(device,passCount,true);
+        mWavesVB = std::make_unique<UploadBuffer<Vertex>>(device, waveVertexCount,false);
     }
     FrameResource(const FrameResource& rhs) = delete;
     FrameResource& operator=(const FrameResource& rhs) = delete;
@@ -90,9 +91,131 @@ public:
     std::unique_ptr<UploadBuffer<ObjectConstants>> ObjectsCB = nullptr;
     std::unique_ptr<UploadBuffer<PassConstants>> PassCB = nullptr;
 
+    // 波浪使用动态顶点缓冲区，类似上面的Constant Buffer.
+    std::unique_ptr<UploadBuffer<Vertex>> mWavesVB = nullptr;
+
     // 每帧需要有自己的fence，来判断GPU与CPU的帧之间的同步.
     UINT64 Fence = 0;
 };
+
+// 模拟波浪.
+class Waves 
+{
+public:
+    Waves(int m,int n,float dx,float dt,float speed,float damping);
+    Waves(const Waves& rhs) = delete;
+    Waves& operator=(const Waves& ) = delete;
+    ~Waves();
+
+    int RowCount();
+    int ColumnCount();
+    int VertexCount();
+    int TriangleCount();
+    float Width();
+    float Depth();
+
+    // return the solution at the ith grid point.
+    const DirectX::XMFLOAT3& Position(int i) const {return mCurrSolution[i]; }
+    const DirectX::XMFLOAT3& Normal(int i ) const {return mNormals[i]; }
+    const DirectX:: XMFLOAT3& TangentX(int i) const {return mTangentX[i]; }
+
+    void Update(float dt);
+    void Disturb(int i,int j,float magnitude);
+private:
+    int mNumRows = 0;
+    int mNumCols = 0;
+
+    int mVertexCount = 0;
+    int mTriangleCount = 0;
+
+    // Simulate constants we can precompute.
+    float mK1 = 0.0f;
+    float mK2 = 0.0f;
+    float mK3 = 0.0f;
+   
+    float mTimeStep = 0.0f;
+    float mSpetialStep = 0.0f;
+
+    std::vector<DirectX::XMFLOAT3> mPrevSolution;
+    std::vector<DirectX::XMFLOAT3> mCurrSolution;
+	std::vector<DirectX::XMFLOAT3> mNormals;
+	std::vector<DirectX::XMFLOAT3> mTangentX;
+};
+Waves::Waves(int m, int n, float dx, float dt, float speed, float damping)
+{
+    mNumRows = m;
+    mNumCols = n;
+
+    mVertexCount = m*n;
+    mTriangleCount=(m-1)*(n-1)*2;
+
+    mTimeStep = dt;
+    // dx应该是网格半径？
+    mSpetialStep = dx;
+
+    mPrevSolution.resize(mVertexCount);
+    mCurrSolution.resize(mVertexCount);
+    mNormals.resize(mVertexCount);
+    mTangentX.resize(mVertexCount);
+
+    // 中心长度
+    float halfWeight = (n-1)*dx/2.f;
+    float halfHeight = (m-1)*dx/2.f;
+    for (int i = 0; i < m; ++i)
+    {
+        float z = i*dx + (-halfHeight);
+        for (int j = 0; j < n; ++j)
+        {
+            float x = j*dx + (-halfWeight);
+            float idx = i*n+j;
+            mPrevSolution[idx] = XMFLOAT3(x,0.f,z);
+            mCurrSolution[idx] = XMFLOAT3(x,0.f,z);
+            mNormals[idx] = XMFLOAT3(0.F,1.F,0.F);
+            mTangentX[idx] = XMFLOAT3(1.f,0.f,0.f);
+        }
+    }
+}
+Waves::~Waves(){}
+
+int Waves::RowCount()
+{
+    return mNumRows;
+}
+
+int Waves::ColumnCount()
+{
+    return mNumCols;
+}
+
+int Waves::VertexCount()
+{
+    return mNumRows*mNumCols;
+}
+
+int Waves::TriangleCount()
+{
+    return (mNumRows-1)*(mNumCols-1)*2;
+}
+
+float Waves::Width()
+{
+    return mSpetialStep *(mNumRows-1);
+}
+
+float Waves::Depth()
+{
+    return mSpetialStep *(mNumCols-1);
+}
+
+void Waves::Update(float dt)
+{
+
+}
+
+void Waves::Disturb(int i, int j, float magnitude)
+{
+
+}
 
 class BoxApp : public D3DApp
 {
@@ -151,6 +274,13 @@ private:
     POINT mLastMousePos;
 
     float GetHillsHeight(float x,float z) const;
+
+    // 波浪
+    std::unique_ptr<Waves> mWaves;
+
+    // 保存render item的引用，每帧更新VB
+	RenderItem* mWavesRitem = nullptr;
+
 };
 
 BoxApp::BoxApp(HINSTANCE hinstance)
@@ -359,7 +489,98 @@ bool BoxApp::Initialize()
 
         mGeometries["landGeo"]=std::move(mBoxGeo);
 
+
+        // 创建 waves 的索引缓冲区
+        mWaves = std::make_unique<Waves>(128,128,1.f,0.3f,4.f,0.2f);
+        indices.resize(3 * mWaves->TriangleCount());
+        //std::vector<std::uint16_t> indices();
+        int m = mWaves->RowCount();
+        int n = mWaves->ColumnCount();
+        int k = 0;
+        for (int i = 0; i < m - 1; ++i)
+        {
+            for (int j = 0; j < n - 1; ++j)
+            {
+                indices[k] = i*n+j;
+                indices[k+1] = i*n+j+1;
+                indices[k+2] = (i+1)*n+j;
+
+                indices[k+3] = i*n+j+1;
+                indices[k+4] = (i+1)*n+j+1;
+                indices[k+5] = (i+1)*n+j;
+                k+=6;
+            }
+        }
+
+        SubmeshGeometry submesh;
+        submesh.BaseVertexLocation = 0;
+        submesh.StartIndexLocation = 0;
+        submesh.IndexCount = indices.size();
+
+
+        vbByteSize = mWaves->VertexCount()*sizeof(Vertex);
+        ibByteSize = indices.size()*sizeof(std::uint16_t);
+
+        auto mWaveGeo = std::make_unique<MeshGeometry>();
+        mWaveGeo->Name = "Waves";
+		mWaveGeo->DrawArgs["grid"] = submesh;
+
+        mWaveGeo->VertexBufferCPU = nullptr;
+        mWaveGeo->VertexBufferGPU = nullptr;
+        mWaveGeo->IndexBufferCPU = nullptr;
+        
+        mWaveGeo->VertexBufferByteSize = vbByteSize;
+        mWaveGeo->VertexByteStride = sizeof(Vertex);
+        mWaveGeo->IndexBufferByteSize = ibByteSize;
+        mWaveGeo->IndexFormat = DXGI_FORMAT_R16_UINT;
+
+        // 创建index buffer
+        ibDesc.Width = ibByteSize;
+        defaultBufferProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+        // 创建IB的实际buffer
+        md3dDevice->CreateCommittedResource(
+            &defaultBufferProperties,
+            D3D12_HEAP_FLAG_NONE,
+            &ibDesc,
+            D3D12_RESOURCE_STATE_COMMON,
+            nullptr,
+            IID_PPV_ARGS(mWaveGeo->IndexBufferGPU.GetAddressOf())
+        );
+        // 创建IB的中介buffer
+        defaultBufferProperties.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+        md3dDevice->CreateCommittedResource(
+            &defaultBufferProperties,
+            D3D12_HEAP_FLAG_NONE,
+            &ibDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(mWaveGeo->IndexBufferUploader.GetAddressOf())  
+        );
+
+        // 把索引缓冲区拷贝到中介区.
+        pData = nullptr;
+        mWaveGeo->IndexBufferUploader->Map(0,nullptr, (void**)&pData);
+        memcpy(pData,indices.data(),ibByteSize);
+        mWaveGeo->IndexBufferUploader->Unmap(0,nullptr);
+        pData = nullptr;
+        // 把上传区的数据拷贝的default
+        mCommandList->ResourceBarrier(
+            1,
+            &CD3DX12_RESOURCE_BARRIER::Transition(mWaveGeo->IndexBufferGPU.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_COPY_DEST)
+        );
+
+        mCommandList->CopyBufferRegion(
+            mWaveGeo->IndexBufferGPU.Get(),0,mWaveGeo->IndexBufferUploader.Get(),0,ibByteSize
+        );
+		mCommandList->ResourceBarrier(
+			1,
+			&CD3DX12_RESOURCE_BARRIER::Transition(mWaveGeo->IndexBufferGPU.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ)
+		);
+        mGeometries["waveGeo"] = std::move(mWaveGeo);
 	}
+
 
 	// 构建几何体后就可以Build渲染项了，渲染项可以理解为是几何体的实例化，每个渲染项是场景中的一个物体，比如可能有多个圆台形组成的物体
 	{
@@ -374,6 +595,17 @@ bool BoxApp::Initialize()
 
 		mAllRenderItems.push_back(std::move(landRenderItem));
 
+        auto waveRenderItem = std::make_unique<RenderItem>();
+        waveRenderItem->World = MathHelper::Identity4x4();
+        waveRenderItem->ObjCBOffset = 1;
+        waveRenderItem->Geo = mGeometries["waveGeo"].get();
+        waveRenderItem->PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+        waveRenderItem->BaseVertexLocation = waveRenderItem->Geo->DrawArgs["grid"].BaseVertexLocation;
+		waveRenderItem->StartIndexLocation = waveRenderItem->Geo->DrawArgs["grid"].StartIndexLocation;
+		waveRenderItem->IndexCount = waveRenderItem->Geo->DrawArgs["grid"].IndexCount;
+        mWavesRitem = waveRenderItem.get();
+        mAllRenderItems.push_back(std::move(waveRenderItem));
+
 		// 非透明，添加到对应Pass中
 		for (auto& e : mAllRenderItems)
 		{
@@ -386,7 +618,7 @@ bool BoxApp::Initialize()
         for(int i=0;i<gNumFrameResources;++i)
         {
             mFrameResources.push_back(
-                std::make_unique<FrameResource>(md3dDevice.Get(),1,mAllRenderItems.size())
+                std::make_unique<FrameResource>(md3dDevice.Get(),1,mAllRenderItems.size(),mWaves->VertexCount())
             );
         }
     }
@@ -701,28 +933,35 @@ void BoxApp::Update(const GameTimer& gt)
         currPassCB->CopyData(0,passConstants);
     }
     
-    // // 更新Constant Buffer.
-    // float x = mRadius*sinf(mPhi)*cosf(mTheta);
-    // float y = mRadius*sinf(mPhi)*sinf(mTheta);
-    // float z = mRadius*cosf(mPhi);
-    //
-    // // View matrix.
-    // XMVECTOR pos = XMVectorSet(x,y,z,1.0f);
-    // XMVECTOR target = XMVectorZero();
-    // XMVECTOR up = XMVectorSet(0.f,1,0.f,0.f);
-    //
-    // XMMATRIX view = XMMatrixLookAtLH(pos,target,up);
-    // XMStoreFloat4x4(&mView,view);
-    //
-    // XMMATRIX model = XMLoadFloat4x4(&mWorld);
-    // XMMATRIX proj = XMLoadFloat4x4(&mProj);
-    // XMMATRIX mvp = model*view*proj;
-    //
-    // // 更新常量缓冲区.
-    // ObjectConstants objectConstants;
-    // // hlsl是列主序矩阵，DXMath中的矩阵传递时需要转置
-    // XMStoreFloat4x4(&objectConstants.ModelViewProj,XMMatrixTranspose( mvp));
-    // mObjectCB->CopyData(0,objectConstants);
+    // 更新 waves 的VB
+    {
+        // 每隔一段时间，生成一个随机的波浪
+        static float t_base = 0.0f;
+        if ((mTimer.TotalTime() - t_base) >= 0.25f)
+        {
+            t_base+=0.25f;
+            int i = MathHelper::Rand(4,mWaves->RowCount()-1);
+            int j = MathHelper::Rand(4,mWaves->ColumnCount()-1);
+
+            float r = MathHelper::RandF(0.2f,0.5f);
+            mWaves->Disturb(i,j,r);
+            
+        }
+
+        // 模拟波浪计算
+        mWaves->Update(gt.DeltaTime());
+        // 更新顶点缓冲区.
+		auto currWaveVB = mCurrentFrameResource->mWavesVB.get();
+		for (int i = 0; i < mWaves->VertexCount(); ++i)
+		{
+			Vertex v;
+			v.Pos = mWaves->Position(i);
+			v.Color = XMFLOAT4(DirectX::Colors::Blue);
+			currWaveVB->CopyData(i, v);
+
+		}
+		mWavesRitem->Geo->VertexBufferGPU = currWaveVB->Resource();
+    }
 }
 
 void BoxApp::Draw(const GameTimer& gt)
