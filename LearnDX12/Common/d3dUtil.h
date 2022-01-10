@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <windows.h>
 #include <wrl.h>
@@ -21,6 +21,7 @@
 #include <unordered_map>
 #include <shlobj.h>
 #include <strsafe.h>
+#include "MathHelper.h"
 
 inline std::wstring AnsiToWString(const std::string& str)
 {
@@ -138,6 +139,34 @@ struct MeshGeometry
     }
 };
 
+// 材质
+struct Material 
+{
+    // 便于查找调试
+    std::string Name;
+
+    // 材质的常量缓冲区索引
+    int MatCBIndex = -1;
+
+    int NumFramesDirty = 0;
+
+    // 材质参数
+    DirectX::XMFLOAT4 DiffuseAlbedo = {1.0f,1.0f,1.0f,1.0f};
+    DirectX::XMFLOAT3 FresnelR0 = {0.01,0.01f,0.01f};
+    float Roughness = 0.25f;
+    DirectX::XMFLOAT4X4 MatTransform = MathHelper::Identity4x4();
+};
+
+// 光源
+struct Light
+{
+    DirectX::XMFLOAT3 Strength = {0.5f,0.5f,0.5f};  // 光源的颜色 
+    float FalloffStart = 1.0f;                      // 使用范围             点光源     聚光灯
+    DirectX::XMFLOAT3 Direction ={0.f,-1.0f,0.f};   // 适用范围     方向光             聚光灯
+    float FalloffEnd = 10.0f;                       //                     点光       聚光灯
+    DirectX::XMFLOAT3 Position ={0.f,0.f,0.f};      //                     点光       聚光灯
+    float SpotPower = 64.0f;                        //                                聚光灯
+};
 
 // DxException类
 
