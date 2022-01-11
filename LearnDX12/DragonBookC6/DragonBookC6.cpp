@@ -405,6 +405,10 @@ private:
 
     // 材质
     std::unordered_map<std::string,std::unique_ptr<Material>> mMaterials;
+
+    // 太阳位置
+    float mSunTheta = 1.25f*XM_PI;
+    float mSunPhi = XM_PIDIV4;
 };
 
 BoxApp::BoxApp(HINSTANCE hinstance)
@@ -1022,6 +1026,26 @@ void BoxApp::Update(const GameTimer& gt)
         {
             mIsWireframe = false;
         }
+
+
+        const float dt = gt.DeltaTime();
+        if (GetAsyncKeyState(VK_LEFT) && 0x8000)
+        {
+            mSunTheta -=1.0f*dt;
+        }
+		if (GetAsyncKeyState(VK_RIGHT) && 0x8000)
+		{
+			mSunTheta += 1.0f * dt;
+		}
+		if (GetAsyncKeyState(VK_UP) && 0x8000)
+		{
+			mSunPhi -= 1.0f * dt;
+		}
+		if (GetAsyncKeyState(VK_DOWN) && 0x8000)
+		{
+			mSunPhi += 1.0f * dt;
+		}
+        mSunPhi = MathHelper::Clamp(mSunPhi,0.1f,XM_PIDIV2);
     }
     // 更新相机
     {
@@ -1100,7 +1124,11 @@ void BoxApp::Update(const GameTimer& gt)
 
         // 光照
         passConstants.AmbientLight = {0.25f,0.25f,0.25f,1.f};
-        passConstants.Lights[0].Direction = XMFLOAT3(0.5F,-1.0F,0.5F);
+        XMFLOAT3 Direction;
+        Direction.x = sinf(mSunPhi)*cosf(mSunTheta);
+		Direction.y = cosf(mSunPhi);
+		Direction.z = sinf(mSunPhi) *sinf(mSunTheta);
+        passConstants.Lights[0].Direction = Direction;
 		passConstants.Lights[0].Strength = XMFLOAT3(1.F, 1.F, 0.9F);
 
 
