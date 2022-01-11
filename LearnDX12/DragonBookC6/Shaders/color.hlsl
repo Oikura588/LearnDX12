@@ -102,8 +102,11 @@ float4 PS(VertexOut pin) : SV_Target
     float3 shadowFactor = 1.0f;
     float4 directLight = ComputeLighting(gLights, mat,pin.PosW, pin.NormalW, toEye,shadowFactor);
     float4 litColor = ambient + directLight;
-    litColor.a = gDiffuseAlbedo.a;
     
+    // 随时间变化的因子.
+    float timeFactor = 0.5 * sin(2*3.14*gTotalTime) + 0.5f;
+    litColor *= timeFactor;
+    litColor.a = gDiffuseAlbedo.a;
     return litColor;
 }
 

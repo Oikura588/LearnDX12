@@ -1101,7 +1101,8 @@ void BoxApp::Update(const GameTimer& gt)
         // 光照
         passConstants.AmbientLight = {0.25f,0.25f,0.25f,1.f};
         passConstants.Lights[0].Direction = XMFLOAT3(0.5F,-1.0F,0.5F);
-		passConstants.Lights[0].Strength = XMFLOAT3(1.F, 1.F, 0.9F);
+        // 红色的光.
+		passConstants.Lights[0].Strength = XMFLOAT3(2.F, 0.1F, 0.1F);
 
 
         currPassCB->CopyData(0,passConstants);
