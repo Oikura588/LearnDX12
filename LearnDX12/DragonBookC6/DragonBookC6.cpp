@@ -438,14 +438,14 @@ bool BoxApp::Initialize()
         grass->MatCBIndex = 0;
         grass->DiffuseAlbedo = XMFLOAT4(0.2f,0.6f,0.2f,1.0f);
         grass->FresnelR0 = XMFLOAT3(0.01f,0.01f,0.01f);
-        grass->Roughness = 0.125f;
+        grass->Roughness = 0.1f;
         grass->NumFramesDirty = gNumFrameResources;
 
         auto water = std::make_unique<Material>();
         water->MatCBIndex = 1;
         water->DiffuseAlbedo = XMFLOAT4(0.f, 0.2f, 0.6f, 1.0f);
         water->FresnelR0 = XMFLOAT3(0.1f, 0.1f, 0.1f);
-        water->Roughness = 0.0f;
+        water->Roughness = 1.0f;
         water->NumFramesDirty = gNumFrameResources;
 
         mMaterials["grass"] = std::move(grass);
