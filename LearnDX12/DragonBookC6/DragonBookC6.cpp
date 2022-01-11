@@ -82,6 +82,11 @@ struct PassConstants
     float    FarZ;
     float    TotalTime;
     float    DeltaTime;
+
+    // 环境光
+    XMFLOAT4 AmbientLight;
+    // 直接光
+    Light    Lights[MaxLights];
 };
 
 // 以CPU每帧都需更新的资源作为基本元素，包括CmdListAlloc、ConstantBuffer等.
@@ -430,12 +435,14 @@ bool BoxApp::Initialize()
         grass->DiffuseAlbedo = XMFLOAT4(0.2f,0.6f,0.2f,1.0f);
         grass->FresnelR0 = XMFLOAT3(0.01f,0.01f,0.01f);
         grass->Roughness = 0.125f;
+        grass->NumFramesDirty = gNumFrameResources;
 
         auto water = std::make_unique<Material>();
-		grass->MatCBIndex = 1;
-		grass->DiffuseAlbedo = XMFLOAT4(0.f, 0.2f, 0.6f, 1.0f);
-		grass->FresnelR0 = XMFLOAT3(0.1f, 0.1f, 0.1f);
-		grass->Roughness = 0.0f;
+        water->MatCBIndex = 1;
+        water->DiffuseAlbedo = XMFLOAT4(0.f, 0.2f, 0.6f, 1.0f);
+        water->FresnelR0 = XMFLOAT3(0.1f, 0.1f, 0.1f);
+        water->Roughness = 0.0f;
+        water->NumFramesDirty = gNumFrameResources;
 
         mMaterials["grass"] = std::move(grass);
         mMaterials["water"] = std::move(water);
@@ -457,16 +464,8 @@ bool BoxApp::Initialize()
             auto& p = grid.Vertices[i].Position;
             vertices[i].Pos = p;
             vertices[i].Pos.y = GetHillsHeight(p.x,p.z);
-
-            // 基于顶点高度上色
-            if (vertices[i].Pos.y < 20.f)
-            {
-                vertices[i].Color = XMFLOAT4(0.45f,0.39f,0.34f,1.0f);
-            }
-            else
-            {
-                vertices[i].Color = XMFLOAT4(1.f,1.f,1.f,1.f);
-            }
+            vertices[i].Normal = GetHillsNormal(p.x,p.z);
+           
         }
         std::vector<std::uint16_t> indices = grid.GetIndices16();
 
@@ -807,7 +806,7 @@ bool BoxApp::Initialize()
         
         D3D12_ROOT_SIGNATURE_DESC rootSignatureDesc;
         rootSignatureDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-        rootSignatureDesc.NumParameters = 2;
+        rootSignatureDesc.NumParameters = 3;
         rootSignatureDesc.pParameters = slotRootParameter;
         rootSignatureDesc.pStaticSamplers = nullptr;
         rootSignatureDesc.NumStaticSamplers = 0;
@@ -1098,6 +1097,13 @@ void BoxApp::Update(const GameTimer& gt)
         passConstants.FarZ = 1000.0f;
         passConstants.DeltaTime=gt.DeltaTime();
         passConstants.TotalTime = gt.TotalTime();
+
+        // 光照
+        passConstants.AmbientLight = {0.25f,0.25f,0.25f,1.f};
+        passConstants.Lights[0].Direction = XMFLOAT3(0.5F,-1.0F,0.5F);
+		passConstants.Lights[0].Strength = XMFLOAT3(1.F, 1.F, 0.9F);
+
+
         currPassCB->CopyData(0,passConstants);
     }
     
@@ -1124,7 +1130,7 @@ void BoxApp::Update(const GameTimer& gt)
 		{
 			Vertex v;
 			v.Pos = mWaves->Position(i);
-			v.Color = XMFLOAT4(DirectX::Colors::Blue);
+			v.Normal = mWaves->Normal(i);
 			currWaveVB->CopyData(i, v);
 
 		}
