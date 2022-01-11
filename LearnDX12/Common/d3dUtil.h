@@ -168,6 +168,8 @@ struct Light
     float SpotPower = 64.0f;                        //                                聚光灯
 };
 
+#define MaxLights 16
+
 // DxException类
 
 class DxException
