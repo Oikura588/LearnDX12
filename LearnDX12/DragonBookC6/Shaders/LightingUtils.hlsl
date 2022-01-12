@@ -41,7 +41,21 @@ float3 BlinnPhong(float3 lightStrength,float3 lightVec,float3 normal,float3 toEy
 	const float m = mat.Shininess * 256.f;
 	float3 halfVec = normalize(toEye + lightVec);
 	
-	float roughnessFactor = (m + 8.0f) / 8.0f * pow(max(dot(halfVec, normal), 0.0f), m);
+    float kd = max(dot(halfVec, normal), 0.0f);
+    float roughnessFactor = (m + 8.0f) / 8.0f * pow(max(kd, 0.0f), m);
+	// 卡通渲染
+    if (roughnessFactor<=0.1f)
+    {
+        roughnessFactor = 0.0f;
+    }
+	else if(roughnessFactor<=0.8f)
+    {
+        roughnessFactor = 0.5f;
+    }
+    else
+    {
+        roughnessFactor = 0.8f;
+    }
 	float3 FresnelFactor = Fresnel(mat.FresnelR0, normal, lightVec);
 	
 	float3 specAlbedo = FresnelFactor * roughnessFactor;
@@ -56,6 +70,18 @@ float3 ComputeDirectionalLight(Light L,Material mat,float3 normal,float3 toEye)
 	float3 lightVec = -L.Direction;
 	// 方向光的光强度直接由朗伯余弦计算
 	float ndotl = max(dot(normal, lightVec), 0.0);
+	if(ndotl<=0.f)
+    {
+        ndotl = 0.4f;
+    }
+	else if(ndotl<=0.5f)
+    {
+        ndotl = 0.6f;
+    }
+    else
+    {
+        ndotl = 1.0f;
+    }
 	float3 lightStrength = L.Strength * ndotl;
 	
 	return BlinnPhong(lightStrength, lightVec, normal, toEye, mat);
@@ -72,6 +98,18 @@ float3 ComputePointLight(Light L,Material mat,float3 pos, float3 normal,float3 t
 	lightVec /= d;
 	// 光强度由朗伯余弦计算
 	float ndotl = max(dot(normal, lightVec), 0.0);
+    if (ndotl <= 0.f)
+    {
+        ndotl = 0.4f;
+    }
+    else if (ndotl <= 0.5f)
+    {
+        ndotl = 0.6f;
+    }
+    else
+    {
+        ndotl = 1.0f;
+    }
 	float3 lightStrength = L.Strength * ndotl;
 	// 光强的衰减
 	float add = CalcAttenuation(d, L.FalloffStart, L.FalloffEnd);
@@ -91,6 +129,18 @@ float3 ComputeSpotLight(Light L,Material mat,float3 pos,float3 normal,float3 toE
 	lightVec /= d;
 	// 光强度由朗伯余弦计算
 	float ndotl = max(dot(normal, lightVec), 0.0);
+    if (ndotl <= 0.f)
+    {
+        ndotl = 0.4f;
+    }
+    else if (ndotl <= 0.5f)
+    {
+        ndotl = 0.6f;
+    }
+    else
+    {
+        ndotl = 1.0f;
+    }
 	float3 lightStrength = L.Strength * ndotl;
 	// 距离衰减
 	float add = CalcAttenuation(d, L.FalloffStart, L.FalloffEnd);
