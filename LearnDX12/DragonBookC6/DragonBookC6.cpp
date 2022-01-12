@@ -16,11 +16,21 @@ struct Vertex
 {
     XMFLOAT3 Pos;
     XMFLOAT4 Color;
+    XMFLOAT3 Normal;
 };
 // 常量缓冲区.每个物体有自己的transform信息.
 struct ObjectConstants
 {
     XMFLOAT4X4 World = MathHelper::Identity4x4();
+    XMFLOAT4X4 InvWorld = MathHelper::Identity4x4();
+};
+
+struct MaterialConstants
+{
+    DirectX::XMFLOAT4 DiffuseAlbedo;
+    DirectX::XMFLOAT3 FresnelR0;
+    float Roughness;
+    DirectX::XMFLOAT4 MaterialTransform;
 };
 
 // 存储绘制一个物体需要的数据的结构，随着不同的程序有所差别.
@@ -43,6 +53,9 @@ struct RenderItem
     UINT IndexCount;
     UINT StartIndexLocation;
     int BaseVertexLocation;
+
+    // 材质
+    Material* Mat = nullptr;
 };
 
 // 每次渲染时会更新的缓冲区。
@@ -64,6 +77,9 @@ struct PassConstants
     float    FarZ;
     float    TotalTime;
     float    DeltaTime;
+
+    XMFLOAT4 AmbientLight;
+    Light Lights[MaxLights];
 };
 
 // 以CPU每帧都需更新的资源作为基本元素，包括CmdListAlloc、ConstantBuffer等.
@@ -71,7 +87,7 @@ struct PassConstants
 class FrameResource
 {
 public:
-    FrameResource(ID3D12Device* device,UINT passCount,UINT objectCount)
+    FrameResource(ID3D12Device* device,UINT passCount,UINT objectCount,UINT MaterialCount)
     {
         device->CreateCommandAllocator(
             D3D12_COMMAND_LIST_TYPE_DIRECT,
@@ -79,6 +95,7 @@ public:
         );
         ObjectsCB = std::make_unique<UploadBuffer<ObjectConstants>>(device,objectCount,true);
         PassCB = std::make_unique<UploadBuffer<PassConstants>>(device,passCount,true);
+        MaterialCB = std::make_unique<UploadBuffer<MaterialConstants>>(device,MaterialCount,true);
     }
     FrameResource(const FrameResource& rhs) = delete;
     FrameResource& operator=(const FrameResource& rhs) = delete;
@@ -89,6 +106,7 @@ public:
     // 在GPU处理完此ConstantBuffer相关的命令前，不能对其重置
     std::unique_ptr<UploadBuffer<ObjectConstants>> ObjectsCB = nullptr;
     std::unique_ptr<UploadBuffer<PassConstants>> PassCB = nullptr;
+    std::unique_ptr<UploadBuffer<MaterialConstants>> MaterialCB = nullptr;
 
     // 每帧需要有自己的fence，来判断GPU与CPU的帧之间的同步.
     UINT64 Fence = 0;
@@ -117,6 +135,7 @@ private:
     ComPtr<ID3D12RootSignature> mRootSignature  = nullptr;
     ComPtr<ID3D12DescriptorHeap> mCbvHeap       = nullptr;
 	UINT mPassCbvOffset;
+    UINT mMaterialCbvOffset;
 
     // 存储所有渲染项.
     std::vector<std::unique_ptr<RenderItem>> mAllRenderItems;
@@ -153,6 +172,9 @@ private:
 
     // 是否开启线框模式
     bool mIsWireframe = false;
+
+    // 材质
+    std::unordered_map<std::string,std::unique_ptr<Material>> mMaterials;
 };
 
 BoxApp::BoxApp(HINSTANCE hinstance)
@@ -174,6 +196,46 @@ bool BoxApp::Initialize()
     // 重置命令列表来执行初始化命令
     ThrowIfFailed( mCommandList->Reset(mDirectCmdListAlloc.Get(),nullptr));
     // 初始化.
+    // Build material.
+    {
+		// 创建材质
+		auto bricks0 = std::make_unique<Material>();
+		bricks0->Name = "bricks0";
+		bricks0->MatCBIndex = 0;
+		bricks0->NumFramesDirty = gNumFrameResources;
+		bricks0->DiffuseAlbedo = XMFLOAT4(Colors::ForestGreen);
+		bricks0->FresnelR0 = XMFLOAT3(0.02f, 0.02f, 0.02f);
+		bricks0->Roughness = 0.1f;
+
+		auto stone0 = std::make_unique<Material>();
+		stone0->Name = "stone0";
+		stone0->MatCBIndex = 1;
+        stone0->NumFramesDirty = gNumFrameResources;
+		stone0->DiffuseAlbedo = XMFLOAT4(Colors::LightSteelBlue);
+		stone0->FresnelR0 = XMFLOAT3(0.05f, 0.05f, 0.05f);
+		stone0->Roughness = 0.3f;
+
+		auto tile0 = std::make_unique<Material>();
+		tile0->Name = "tile0";
+		tile0->MatCBIndex = 2;
+        tile0->NumFramesDirty = gNumFrameResources;
+		tile0->DiffuseAlbedo = XMFLOAT4(Colors::LightGray);
+		tile0->FresnelR0 = XMFLOAT3(0.02f, 0.02f, 0.02f);
+		tile0->Roughness = 0.2f;
+
+		auto skullMat = std::make_unique<Material>();
+		skullMat->Name = "skullMat";
+		skullMat->MatCBIndex = 3;
+        skullMat->NumFramesDirty = gNumFrameResources;
+		skullMat->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
+		skullMat->FresnelR0 = XMFLOAT3(0.05f, 0.05f, 0.05);
+		skullMat->Roughness = 0.3f;
+
+		mMaterials["bricks0"] = std::move(bricks0);
+		mMaterials["stone0"] = std::move(stone0);
+		mMaterials["tile0"] = std::move(tile0);
+		mMaterials["skullMat"] = std::move(skullMat);
+    }
 	// Build Geometry.和渲染没什么关系了，就是创建buffer并保存起来，绘制的时候用
 	{
 		// 使用工具函数创建顶点和索引的数组
@@ -181,18 +243,22 @@ bool BoxApp::Initialize()
 		GeometryGenerator::MeshData grid = GeometryGenerator::CreateGrid(20.0f, 30.0f, 60, 40);
 		GeometryGenerator::MeshData sphere = GeometryGenerator::CreateSphere(0.5f, 20.0f, 20.0f);
 		GeometryGenerator::MeshData cylinder = GeometryGenerator::CreateCylinder(0.5f, 0.3f, 3.0f, 20, 20);
+        GeometryGenerator::MeshData mesh = GeometryGenerator::LoadModel("D:\\Study\\dx12\\LearnDX12\\LearnDX12\\LearnDX12\\DragonBookC6\\Models\\skull.txt");
+
 
 		// 计算每个物体的顶点偏移量
 		UINT boxVertexOffset = 0;
 		UINT gridVertexOffset = box.Vertices.size();
 		UINT sphereVertexOffset = gridVertexOffset + grid.Vertices.size();
 		UINT cylinderVertexOffset = sphereVertexOffset + sphere.Vertices.size();
+        UINT meshVertexOffset = cylinderVertexOffset + cylinder.Vertices.size();
 
 		// 计算索引偏移量
 		UINT boxIndexOffset = 0;
 		UINT girdIndexOffset = box.Indices32.size();
 		UINT sphereIndexOffset = girdIndexOffset + grid.Indices32.size()  ;
 		UINT cylinderIndexOffset = sphereIndexOffset + sphere.Indices32.size();
+        UINT meshIndexOffset = cylinderIndexOffset + cylinder.Indices32.size();
 
 		// 多个子网格绘制参数，存储索引信息.
 		SubmeshGeometry boxSubmesh;
@@ -215,8 +281,13 @@ bool BoxApp::Initialize()
 		cylinderSubmesh.IndexCount = cylinder.Indices32.size();
 		cylinderSubmesh.StartIndexLocation = cylinderIndexOffset;
 
+        SubmeshGeometry meshSubmesh;
+        meshSubmesh.BaseVertexLocation = meshVertexOffset;
+        meshSubmesh.IndexCount = mesh.Indices32.size();
+        meshSubmesh.StartIndexLocation = meshIndexOffset;
+
 		// 把所有的顶点、索引放到一个缓冲区内
-		auto totalVertexCount = box.Vertices.size() + grid.Vertices.size() + sphere.Vertices.size() + cylinder.Vertices.size();
+		auto totalVertexCount = box.Vertices.size() + grid.Vertices.size() + sphere.Vertices.size() + cylinder.Vertices.size() + mesh.Vertices.size(); 
 
 		std::vector<Vertex> vertices(totalVertexCount);
 		UINT k = 0;
@@ -224,22 +295,33 @@ bool BoxApp::Initialize()
 		{
 			vertices[k].Pos = box.Vertices[i].Position;
 			vertices[k].Color = XMFLOAT4(DirectX::Colors::DarkGreen);
+            vertices[k].Normal = box.Vertices[i].Normal;
 
 		}
 		for (size_t i = 0; i < grid.Vertices.size(); ++i, ++k)
 		{
 			vertices[k].Pos = grid.Vertices[i].Position;
 			vertices[k].Color = XMFLOAT4(DirectX::Colors::ForestGreen);
+			vertices[k].Normal = grid.Vertices[i].Normal;
+
 		}
 		for (size_t i = 0; i < sphere.Vertices.size(); ++i, ++k)
 		{
 			vertices[k].Pos = sphere.Vertices[i].Position;
 			vertices[k].Color = XMFLOAT4(DirectX::Colors::Crimson);
+			vertices[k].Normal = sphere.Vertices[i].Normal;
 		}
 		for (size_t i = 0; i < cylinder.Vertices.size(); ++i, ++k)
 		{
 			vertices[k].Pos = cylinder.Vertices[i].Position;
 			vertices[k].Color = XMFLOAT4(DirectX::Colors::SteelBlue);
+			vertices[k].Normal = cylinder.Vertices[i].Normal;
+		}
+		for (size_t i = 0; i < mesh.Vertices.size(); ++i, ++k)
+		{
+			vertices[k].Pos = mesh.Vertices[i].Position;
+			vertices[k].Color = XMFLOAT4(DirectX::Colors::White);
+			vertices[k].Normal = mesh.Vertices[i].Normal;
 		}
 
 		// 索引的缓冲区.
@@ -248,6 +330,7 @@ bool BoxApp::Initialize()
 		indices.insert(indices.end(), std::begin(grid.GetIndices16()), std::end(grid.GetIndices16()));
 		indices.insert(indices.end(), std::begin(sphere.GetIndices16()), std::end(sphere.GetIndices16()));
 		indices.insert(indices.end(), std::begin(cylinder.GetIndices16()), std::end(cylinder.GetIndices16()));
+        indices.insert(indices.end(),std::begin(mesh.GetIndices16()),std::end(mesh.GetIndices16()));
 
 
 		// 创建几何体和子几何体，存储绘制所用到的Index、Vertex信息
@@ -265,6 +348,7 @@ bool BoxApp::Initialize()
 		mBoxGeo->DrawArgs["grid"] = gridSubmesh;
 		mBoxGeo->DrawArgs["sphere"] = sphereSubmesh;
 		mBoxGeo->DrawArgs["cylinder"] = cylinderSubmesh;
+        mBoxGeo->DrawArgs["mesh"] = meshSubmesh;
 
 
 		// 创建顶点缓冲区.
@@ -422,6 +506,7 @@ bool BoxApp::Initialize()
 		boxRenderItem->BaseVertexLocation = boxRenderItem->Geo->DrawArgs["box"].BaseVertexLocation;
 		boxRenderItem->StartIndexLocation = boxRenderItem->Geo->DrawArgs["box"].StartIndexLocation;
 		boxRenderItem->IndexCount = boxRenderItem->Geo->DrawArgs["box"].IndexCount;
+        boxRenderItem->Mat = mMaterials["stone0"].get();
 
 		mAllRenderItems.push_back(std::move(boxRenderItem));
 
@@ -433,11 +518,24 @@ bool BoxApp::Initialize()
 		gridRenderItem->BaseVertexLocation = gridRenderItem->Geo->DrawArgs["grid"].BaseVertexLocation;
 		gridRenderItem->StartIndexLocation = gridRenderItem->Geo->DrawArgs["grid"].StartIndexLocation;
 		gridRenderItem->IndexCount = gridRenderItem->Geo->DrawArgs["grid"].IndexCount;
+        gridRenderItem->Mat = mMaterials["tile0"].get();
 
 		mAllRenderItems.push_back(std::move(gridRenderItem));
 
+        auto meshRenderItem = std::make_unique<RenderItem>();
+        XMStoreFloat4x4(&meshRenderItem->World, XMMatrixTranslation(0.F,3.F,0.F)*XMMatrixScaling(0.3f, 0.3f, 0.3f));
+        meshRenderItem->ObjCBOffset = 2;
+        meshRenderItem->PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+        meshRenderItem->Geo = mGeometries["shapeGeo"].get();
+        meshRenderItem->BaseVertexLocation = meshRenderItem->Geo->DrawArgs["mesh"].BaseVertexLocation;
+		meshRenderItem->StartIndexLocation = meshRenderItem->Geo->DrawArgs["mesh"].StartIndexLocation;
+		meshRenderItem->IndexCount = meshRenderItem->Geo->DrawArgs["mesh"].IndexCount;
+        meshRenderItem->Mat = mMaterials["skullMat"].get();
+
+		mAllRenderItems.push_back(std::move(meshRenderItem));
+
 		// 构建柱体和球体.
-		UINT objCBOffset = 2;
+		UINT objCBOffset = 3;
 		for (int i = 0; i < 5; ++i)
 		{
 			auto leftCylRenderItem = std::make_unique<RenderItem>();
@@ -462,6 +560,8 @@ bool BoxApp::Initialize()
 			leftCylRenderItem->IndexCount = leftCylRenderItem->Geo->DrawArgs["cylinder"].IndexCount;
 			leftCylRenderItem->StartIndexLocation = leftCylRenderItem->Geo->DrawArgs["cylinder"].StartIndexLocation;
 			leftCylRenderItem->BaseVertexLocation = leftCylRenderItem->Geo->DrawArgs["cylinder"].BaseVertexLocation;
+            leftCylRenderItem->Mat = mMaterials["bricks0"].get();
+
 			mAllRenderItems.push_back(std::move(leftCylRenderItem));
 
 			rightCylRenderItem->ObjCBOffset = objCBOffset++;
@@ -470,6 +570,7 @@ bool BoxApp::Initialize()
 			rightCylRenderItem->IndexCount = rightCylRenderItem->Geo->DrawArgs["cylinder"].IndexCount;
 			rightCylRenderItem->StartIndexLocation = rightCylRenderItem->Geo->DrawArgs["cylinder"].StartIndexLocation;
 			rightCylRenderItem->BaseVertexLocation = rightCylRenderItem->Geo->DrawArgs["cylinder"].BaseVertexLocation;
+            rightCylRenderItem->Mat = mMaterials["bricks0"].get();
 			mAllRenderItems.push_back(std::move(rightCylRenderItem));
 
 			leftSphereRenderItem->ObjCBOffset = objCBOffset++;
@@ -478,6 +579,8 @@ bool BoxApp::Initialize()
 			leftSphereRenderItem->IndexCount = leftSphereRenderItem->Geo->DrawArgs["sphere"].IndexCount;
 			leftSphereRenderItem->StartIndexLocation = leftSphereRenderItem->Geo->DrawArgs["sphere"].StartIndexLocation;
 			leftSphereRenderItem->BaseVertexLocation = leftSphereRenderItem->Geo->DrawArgs["sphere"].BaseVertexLocation;
+            leftSphereRenderItem->Mat = mMaterials["stone0"].get();
+
 			mAllRenderItems.push_back(std::move(leftSphereRenderItem));
 
 
@@ -487,6 +590,7 @@ bool BoxApp::Initialize()
 			rightSphereRenderItem->IndexCount = rightSphereRenderItem->Geo->DrawArgs["sphere"].IndexCount;
 			rightSphereRenderItem->StartIndexLocation = rightSphereRenderItem->Geo->DrawArgs["sphere"].StartIndexLocation;
 			rightSphereRenderItem->BaseVertexLocation = rightSphereRenderItem->Geo->DrawArgs["sphere"].BaseVertexLocation;
+            rightSphereRenderItem->Mat = mMaterials["stone0"].get();
 			mAllRenderItems.push_back(std::move(rightSphereRenderItem));
 		}
 
@@ -502,18 +606,20 @@ bool BoxApp::Initialize()
         for(int i=0;i<gNumFrameResources;++i)
         {
             mFrameResources.push_back(
-                std::make_unique<FrameResource>(md3dDevice.Get(),1,mAllRenderItems.size())
+                std::make_unique<FrameResource>(md3dDevice.Get(),1,mAllRenderItems.size(),mMaterials.size())
             );
         }
     }
 	// 创建常量缓冲区堆
 	{
 		UINT objCount = (UINT)mOpaqueRenderItems.size();
-		mPassCbvOffset = objCount * gNumFrameResources;
+        UINT matCount = (UINT)mMaterials.size();
+        mMaterialCbvOffset = objCount*gNumFrameResources;
+		mPassCbvOffset = mMaterialCbvOffset + matCount*gNumFrameResources;
 		D3D12_DESCRIPTOR_HEAP_DESC heapDesc;
 		heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-		// 描述符个数等于物体数量*Frame数量，每个Frame还有Pass数据，所以额外加1
-		heapDesc.NumDescriptors = (objCount + 1) * gNumFrameResources;
+		// 描述符个数等于物体数量*Frame数量，每个Frame还有Pass和材质数据，所以额外加上
+		heapDesc.NumDescriptors = (objCount + 1 +matCount) * gNumFrameResources;
 		// Shader可见，因为需要读取
 		heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 		heapDesc.NodeMask = 0;
@@ -559,6 +665,27 @@ bool BoxApp::Initialize()
 			}
 		}
 
+        // Material constant
+        for (int frameIndex = 0; frameIndex < gNumFrameResources; ++frameIndex)
+        {
+            auto materialCB = mFrameResources[frameIndex]->MaterialCB->Resource();
+			UINT materialCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(MaterialConstants));
+            UINT materialCount = mMaterials.size();
+            for (UINT i = 0; i < materialCount; ++i)
+            {
+                D3D12_GPU_VIRTUAL_ADDRESS cbAddress = materialCB->GetGPUVirtualAddress();
+                cbAddress += i*materialCBByteSize;
+
+                D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
+                cbvDesc.BufferLocation = cbAddress;
+                cbvDesc.SizeInBytes = materialCBByteSize;
+
+                D3D12_CPU_DESCRIPTOR_HANDLE cbHandle = mCbvHeap->GetCPUDescriptorHandleForHeapStart();
+                cbHandle.ptr += (mMaterialCbvOffset+frameIndex*materialCount+i)* mCbvUavDescriptorSize;
+				md3dDevice->CreateConstantBufferView(&cbvDesc, cbHandle);
+            }
+        }
+
 		// Pass constant.
 		for (int frameIndex = 0; frameIndex < gNumFrameResources; ++frameIndex)
 		{
@@ -582,6 +709,7 @@ bool BoxApp::Initialize()
     // 把着色器当作一个函数，root signature就是函数签名，资源是参数数据.
     {
         // root signature -> root parameter -> type/table -> range.
+        // Object
         D3D12_DESCRIPTOR_RANGE descRange;
         descRange.NumDescriptors = 1;;
         descRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
@@ -595,28 +723,49 @@ bool BoxApp::Initialize()
         D3D12_ROOT_DESCRIPTOR_TABLE  rootDescTable;
         rootDescTable.pDescriptorRanges = &descRange;
         rootDescTable.NumDescriptorRanges = 1;
+        // Material
+        D3D12_DESCRIPTOR_RANGE materialRange;
+        materialRange.NumDescriptors = 1;
+        materialRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+        materialRange.RegisterSpace = 0;
+        materialRange.BaseShaderRegister = 1;
+        materialRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
+        D3D12_ROOT_DESCRIPTOR_TABLE materialDescTable;
+        materialDescTable.pDescriptorRanges = & materialRange;
+        materialDescTable.NumDescriptorRanges = 1;
+
+        // Pass
         D3D12_DESCRIPTOR_RANGE passDescRange;
         passDescRange.NumDescriptors = 1;
         passDescRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
         // 思考,这里RegisterSpace意义还不清楚，下面那个对应着色器中的b0、b1之类的.
         passDescRange.RegisterSpace = 0;
-        passDescRange.BaseShaderRegister=1;
+        passDescRange.BaseShaderRegister=2;
         passDescRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
         D3D12_ROOT_DESCRIPTOR_TABLE passDescTable;
         passDescTable.pDescriptorRanges =&passDescRange;
         passDescTable.NumDescriptorRanges = 1;
+
         
-        D3D12_ROOT_PARAMETER slotRootParameter[2];
+
+        
+        D3D12_ROOT_PARAMETER slotRootParameter[3];
         // object 
         slotRootParameter[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         slotRootParameter[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
         slotRootParameter[0].DescriptorTable = rootDescTable;
-        // pass
+
+        // material
         slotRootParameter[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         slotRootParameter[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        slotRootParameter[1].DescriptorTable = passDescTable;
+        slotRootParameter[1].DescriptorTable = materialDescTable;
+
+        // pass
+        slotRootParameter[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        slotRootParameter[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        slotRootParameter[2].DescriptorTable = passDescTable;
         
         
         // 创建RootSignature.要使用Blob
@@ -625,7 +774,7 @@ bool BoxApp::Initialize()
         
         D3D12_ROOT_SIGNATURE_DESC rootSignatureDesc;
         rootSignatureDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-        rootSignatureDesc.NumParameters = 2;
+        rootSignatureDesc.NumParameters = 3;
         rootSignatureDesc.pParameters = slotRootParameter;
         rootSignatureDesc.pStaticSamplers = nullptr;
         rootSignatureDesc.NumStaticSamplers = 0;
@@ -717,7 +866,8 @@ bool BoxApp::Initialize()
     {
         mInputLayout = {
             {"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0,0,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0,},
-            {"COLOR",0,DXGI_FORMAT_R32G32B32A32_FLOAT,0,12,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0}
+            {"COLOR",0,DXGI_FORMAT_R32G32B32A32_FLOAT,0,12,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
+			{"NORMAL",0,DXGI_FORMAT_R32G32B32_FLOAT,0,28,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0}
         };
     }
 
@@ -893,10 +1043,32 @@ void BoxApp::Update(const GameTimer& gt)
                 XMMATRIX world = XMLoadFloat4x4(&e->World);
                 ObjectConstants objConstants;
                 XMStoreFloat4x4(&objConstants.World,XMMatrixTranspose(world));
+                XMVECTOR det = XMMatrixDeterminant(world);
+				XMStoreFloat4x4(&objConstants.InvWorld, XMMatrixTranspose(XMMatrixInverse(&det,world)));
                 currObjectCB->CopyData(e->ObjCBOffset,objConstants);
                 e->NumFramesDirty--;
             }
             
+        }
+    }
+
+    // 更新Material的CB
+    {
+        auto currMaterialCB = mCurrentFrameResource->MaterialCB.get();
+        for (auto& e : mMaterials)
+        {
+            Material* mat = e.second.get();
+            if (mat->NumFramesDirty > 0)
+            {
+				MaterialConstants matConstants;
+				matConstants.DiffuseAlbedo = mat->DiffuseAlbedo;
+				matConstants.FresnelR0 = mat->FresnelR0;
+				//matConstants.MaterialTransform = mat->MatTransform;
+				matConstants.Roughness = mat->Roughness;
+
+				currMaterialCB->CopyData(mat->MatCBIndex, matConstants);
+				mat->NumFramesDirty--;
+            }
         }
     }
     //  更新Pass的CB.
@@ -921,6 +1093,17 @@ void BoxApp::Update(const GameTimer& gt)
         passConstants.FarZ = 1000.0f;
         passConstants.DeltaTime=gt.DeltaTime();
         passConstants.TotalTime = gt.TotalTime();
+
+        // 环境光
+        passConstants.AmbientLight = XMFLOAT4(0.25f,0.25f,0.35f,1.0f);
+        // 三个光源
+		passConstants.Lights[0].Direction = { 0.57735f, -0.57735f, 0.57735f };
+		passConstants.Lights[0].Strength = { 0.6f, 0.6f, 0.6f };
+		passConstants.Lights[1].Direction = { -0.57735f, -0.57735f, 0.57735f };
+		passConstants.Lights[1].Strength = { 0.3f, 0.3f, 0.3f };
+		passConstants.Lights[2].Direction = { 0.0f, -0.707f, -0.707f };
+		passConstants.Lights[2].Strength = { 0.15f, 0.15f, 0.15f };
+	
         currPassCB->CopyData(0,passConstants);
     }
     
@@ -988,12 +1171,14 @@ void BoxApp::Draw(const GameTimer& gt)
     int passCbvIndex = mPassCbvOffset + mCurrentFrameIndex;
     auto passCbvHandle = mCbvHeap->GetGPUDescriptorHandleForHeapStart();
     passCbvHandle.ptr +=passCbvIndex*mCbvUavDescriptorSize;
-    mCommandList->SetGraphicsRootDescriptorTable(1,passCbvHandle);
+    mCommandList->SetGraphicsRootDescriptorTable(2,passCbvHandle);
 
     // 绘制一个物体需要绑定两个buffer、设置图元类型、设置常量缓冲区等，把这些绘制一个物体需要的数据整合起来，可以作为RenderItem.
 	// 绘制物体
 	{
 		UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
+		UINT matCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(MaterialConstants));
+
 		auto objCB = mCurrentFrameResource->ObjectsCB->Resource();
 
 		for (size_t i = 0; i < mOpaqueRenderItems.size(); ++i)
@@ -1005,6 +1190,11 @@ void BoxApp::Draw(const GameTimer& gt)
 			D3D12_GPU_DESCRIPTOR_HANDLE cbvHandle =  mCbvHeap->GetGPUDescriptorHandleForHeapStart();
 			cbvHandle.ptr+= (ri->ObjCBOffset+mOpaqueRenderItems.size()*mCurrentFrameIndex)*mCbvUavDescriptorSize;
 			mCommandList->SetGraphicsRootDescriptorTable(0, cbvHandle);
+            // 设置材质
+            D3D12_GPU_DESCRIPTOR_HANDLE matHandle= mCbvHeap->GetGPUDescriptorHandleForHeapStart();
+            matHandle.ptr += (mMaterialCbvOffset + mCurrentFrameIndex * mMaterials.size() + ri->Mat->MatCBIndex) * mCbvUavDescriptorSize;
+			mCommandList->SetGraphicsRootDescriptorTable(1, matHandle);
+
 			mCommandList->DrawIndexedInstanced(ri->IndexCount,1,ri->StartIndexLocation,ri->BaseVertexLocation,0);
             //mCommandList->DrawIndexedInstanced(3,1,0,0,0);
 		}
