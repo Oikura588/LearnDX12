@@ -554,11 +554,15 @@ bool BoxApp::Initialize()
 			// 创建点光源
 			mLights[i * 2+0].Position = XMFLOAT3(-5.0f, 6.f, -10.0f + 5.f * i);
 			mLights[i * 2 + 0].FalloffEnd = 20.0f;
-			mLights[i * 2 + 0].Strength = XMFLOAT3(0.8F/5,0.F,0.F);
+			mLights[i * 2 + 0].Direction = XMFLOAT3(0.F,-1.0F,0.F);
+			mLights[i * 2 + 0].SpotPower = 64 ;
+			mLights[i * 2 + 0].Strength = XMFLOAT3(0.8F,0.F,0.F);
 
 			mLights[i * 2+1].Position = XMFLOAT3(5.0f, 6.f, -10.0f + 5.f * i);
 			mLights[i * 2 + 1].FalloffEnd = 20.0f;
-			mLights[i * 2 +1].Strength = XMFLOAT3(0.0F, 0.8F/5, 0.00F);
+			mLights[i * 2 + 1].Direction = XMFLOAT3(0.F, -1.0F, 0.F);
+			mLights[i * 2 + 1].SpotPower = 64;
+			mLights[i * 2 +1].Strength = XMFLOAT3(0.0F, 0.8F, 0.00F);
 
 
 
