@@ -25,6 +25,7 @@ struct ObjectConstants
 {
     XMFLOAT4X4 World = MathHelper::Identity4x4();
     XMFLOAT4X4 InvWorld = MathHelper::Identity4x4();
+	XMFLOAT4X4 TexTransform = MathHelper::Identity4x4();
 };
 
 struct MaterialConstants
@@ -32,7 +33,7 @@ struct MaterialConstants
     DirectX::XMFLOAT4 DiffuseAlbedo;
     DirectX::XMFLOAT3 FresnelR0;
     float Roughness;
-    DirectX::XMFLOAT4 MaterialTransform;
+    DirectX::XMFLOAT4X4 MaterialTransform=MathHelper::Identity4x4();
 };
 
 // 存储绘制一个物体需要的数据的结构，随着不同的程序有所差别.
@@ -109,6 +110,7 @@ public:
     std::unique_ptr<UploadBuffer<ObjectConstants>> ObjectsCB = nullptr;
     std::unique_ptr<UploadBuffer<PassConstants>> PassCB = nullptr;
     std::unique_ptr<UploadBuffer<MaterialConstants>> MaterialCB = nullptr;
+    
 
     // 每帧需要有自己的fence，来判断GPU与CPU的帧之间的同步.
     UINT64 Fence = 0;
@@ -138,6 +140,7 @@ private:
     ComPtr<ID3D12DescriptorHeap> mCbvHeap       = nullptr;
 	UINT mPassCbvOffset;
     UINT mMaterialCbvOffset;
+	UINT mtextureSrvOffset;
 
     // 存储所有渲染项.
     std::vector<std::unique_ptr<RenderItem>> mAllRenderItems;
@@ -182,7 +185,6 @@ private:
     std::unordered_map<std::string,std::unique_ptr<Texture>> mTextures;
 
     // 纹理描述符堆
-	ComPtr<ID3D12DescriptorHeap> mSrvHeap = nullptr;
 	ComPtr<ID3D12DescriptorHeap> mSamplerHeap = nullptr;
 
 };
@@ -225,30 +227,6 @@ bool BoxApp::Initialize()
     }
 
 
-    // 纹理视图
-    {
-        D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-        srvHeapDesc.NumDescriptors = 1;
-        srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-        md3dDevice->CreateDescriptorHeap(
-            &srvHeapDesc,
-            IID_PPV_ARGS(mSrvHeap.GetAddressOf())
-        );
-    }
-    // 纹理视图描述符
-    {
-        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-        ID3D12Resource* texResource = mTextures["woodCrateTex"]->Resource.Get();
-        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; //特殊用途
-        srvDesc.Format = texResource->GetDesc().Format;     //从纹理中读取格式
-        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;                      // 2D纹理的格式
-        srvDesc.Texture2D.MostDetailedMip = 0;
-        srvDesc.Texture2D.MipLevels = texResource->GetDesc().MipLevels;
-        srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
-        md3dDevice->CreateShaderResourceView(texResource,&srvDesc,mSrvHeap->GetCPUDescriptorHandleForHeapStart());
-    }
-
     // 材质需要采样器
 
     // 创建采样器堆
@@ -257,9 +235,9 @@ bool BoxApp::Initialize()
         samplerHeadpDesc.NumDescriptors = 1;
         samplerHeadpDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
         samplerHeadpDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    	samplerHeadpDesc.NodeMask = 1;
 		md3dDevice->CreateDescriptorHeap(
-			&samplerHeadpDesc,
-			IID_PPV_ARGS(mSamplerHeap.GetAddressOf())
+			&samplerHeadpDesc, IID_PPV_ARGS(mSamplerHeap.GetAddressOf())
 		);
     }
     // 创建采样器描述符
@@ -270,6 +248,15 @@ bool BoxApp::Initialize()
         samplerDesc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
         // 仅限于3D纹理
         samplerDesc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    	samplerDesc.MinLOD = 0;
+    	samplerDesc.MaxLOD = D3D12_FLOAT32_MAX;
+    	samplerDesc.MipLODBias = 0.0f;
+    	samplerDesc.MaxAnisotropy = 1;
+    	samplerDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+        
+
+    	md3dDevice->CreateSampler(&samplerDesc,mSamplerHeap->GetCPUDescriptorHandleForHeapStart());
+    	
     }
   
     
@@ -340,7 +327,7 @@ bool BoxApp::Initialize()
 			vertices[k].Pos = box.Vertices[i].Position;
 			vertices[k].Color = XMFLOAT4(DirectX::Colors::DarkGreen);
             vertices[k].Normal = box.Vertices[i].Normal;
-
+			vertices[k].TexC = box.Vertices[i].TexC;
 		}
 
 		// 索引的缓冲区.
@@ -542,10 +529,11 @@ bool BoxApp::Initialize()
         UINT matCount = (UINT)mMaterials.size();
         mMaterialCbvOffset = objCount*gNumFrameResources;
 		mPassCbvOffset = mMaterialCbvOffset + matCount*gNumFrameResources;
+        mtextureSrvOffset = mPassCbvOffset + 1*gNumFrameResources;
 		D3D12_DESCRIPTOR_HEAP_DESC heapDesc;
 		heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-		// 描述符个数等于物体数量*Frame数量，每个Frame还有Pass和材质数据，所以额外加上
-		heapDesc.NumDescriptors = (objCount + 1 +matCount) * gNumFrameResources;
+		// 描述符个数等于物体数量*Frame数量，每个Frame还有Pass和材质、1个纹理数据，所以额外加上
+		heapDesc.NumDescriptors = (objCount + 1 +matCount +1) * gNumFrameResources;
 		// Shader可见，因为需要读取
 		heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 		heapDesc.NodeMask = 0;
@@ -629,6 +617,25 @@ bool BoxApp::Initialize()
 			md3dDevice->CreateConstantBufferView(&cbvDesc,cbHandle);
 
 		}
+
+		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+		ID3D12Resource* texResource = mTextures["woodCrateTex"]->Resource.Get();
+		srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; //特殊用途
+		srvDesc.Format = texResource->GetDesc().Format;     //从纹理中读取格式
+		srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;                      // 2D纹理的格式
+		srvDesc.Texture2D.MostDetailedMip = 0;
+		srvDesc.Texture2D.MipLevels = texResource->GetDesc().MipLevels;
+		srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+
+        // 纹理这种srv资源和常量缓冲区要放到一个堆里(同一个commandlist只能绑定4个堆:CBV/SRV/UAV  RTV   DSV   Sampler)
+        for (int frameIndex = 0; frameIndex < gNumFrameResources; ++frameIndex)
+        {
+            D3D12_CPU_DESCRIPTOR_HANDLE srvHandle = mCbvHeap->GetCPUDescriptorHandleForHeapStart();
+            srvHandle.ptr +=(mtextureSrvOffset + frameIndex)*mCbvUavDescriptorSize;
+            md3dDevice->CreateShaderResourceView(
+                texResource, &srvDesc, srvHandle
+            ) ;
+        }
     }
     
     // 初始化RootSignature，把常量缓冲区绑定到GPU上供Shader读取.
@@ -674,10 +681,35 @@ bool BoxApp::Initialize()
         passDescTable.pDescriptorRanges =&passDescRange;
         passDescTable.NumDescriptorRanges = 1;
 
+    	// texture 
+    	D3D12_DESCRIPTOR_RANGE texDescRange;
+    	texDescRange.NumDescriptors = 1;
+    	texDescRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    	texDescRange.RegisterSpace = 0;
+    	texDescRange.BaseShaderRegister=0;
+    	texDescRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    	D3D12_ROOT_DESCRIPTOR_TABLE texDescTable;
+    	texDescTable.pDescriptorRanges =&texDescRange;
+    	texDescTable.NumDescriptorRanges = 1;
+
+    	// Sampler
+    	D3D12_DESCRIPTOR_RANGE samplerDescRange;
+    	samplerDescRange.NumDescriptors = 1;
+    	samplerDescRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+    	// 思考,这里RegisterSpace意义还不清楚，下面那个对应着色器中的b0、b1之类的.
+    	samplerDescRange.RegisterSpace = 0;
+    	samplerDescRange.BaseShaderRegister=0;
+    	samplerDescRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    	D3D12_ROOT_DESCRIPTOR_TABLE samplerDescTable;
+    	samplerDescTable.pDescriptorRanges =&samplerDescRange;
+    	samplerDescTable.NumDescriptorRanges = 1;
+
         
 
         
-        D3D12_ROOT_PARAMETER slotRootParameter[3];
+        D3D12_ROOT_PARAMETER slotRootParameter[5];
         // object 
         slotRootParameter[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         slotRootParameter[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
@@ -692,7 +724,16 @@ bool BoxApp::Initialize()
         slotRootParameter[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         slotRootParameter[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
         slotRootParameter[2].DescriptorTable = passDescTable;
-        
+
+    	//// 纹理
+    	slotRootParameter[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    	slotRootParameter[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    	slotRootParameter[3].DescriptorTable = texDescTable;
+
+    	// 采样器
+    	slotRootParameter[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    	slotRootParameter[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    	slotRootParameter[4].DescriptorTable = samplerDescTable;
         
         // 创建RootSignature.要使用Blob
         // d3d12规定，必须将根签名的描述布局进行序列化，才可以传入CreateRootSignature方法.
@@ -700,7 +741,7 @@ bool BoxApp::Initialize()
         
         D3D12_ROOT_SIGNATURE_DESC rootSignatureDesc;
         rootSignatureDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-        rootSignatureDesc.NumParameters = 3;
+        rootSignatureDesc.NumParameters = 5;
         rootSignatureDesc.pParameters = slotRootParameter;
         rootSignatureDesc.pStaticSamplers = nullptr;
         rootSignatureDesc.NumStaticSamplers = 0;
@@ -1030,9 +1071,10 @@ void BoxApp::Update(const GameTimer& gt)
 		passConstants.Lights[1].Strength = { 0.3f, 0.3f, 0.3f };
 		passConstants.Lights[2].Direction = { 0.0f, -0.707f, -0.707f };
 		passConstants.Lights[2].Strength = { 0.15f, 0.15f, 0.15f };
-	
+
         currPassCB->CopyData(0,passConstants);
     }
+
     
     // // 更新Constant Buffer.
     // float x = mRadius*sinf(mPhi)*cosf(mTheta);
@@ -1095,6 +1137,7 @@ void BoxApp::Draw(const GameTimer& gt)
     mCommandList->SetDescriptorHeaps(_countof(descHeaps),descHeaps);
     mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
 
+    // 设置常量缓冲区
     int passCbvIndex = mPassCbvOffset + mCurrentFrameIndex;
     auto passCbvHandle = mCbvHeap->GetGPUDescriptorHandleForHeapStart();
     passCbvHandle.ptr +=passCbvIndex*mCbvUavDescriptorSize;
@@ -1121,6 +1164,19 @@ void BoxApp::Draw(const GameTimer& gt)
             D3D12_GPU_DESCRIPTOR_HANDLE matHandle= mCbvHeap->GetGPUDescriptorHandleForHeapStart();
             matHandle.ptr += (mMaterialCbvOffset + mCurrentFrameIndex * mMaterials.size() + ri->Mat->MatCBIndex) * mCbvUavDescriptorSize;
 			mCommandList->SetGraphicsRootDescriptorTable(1, matHandle);
+
+			// 设置纹理
+			D3D12_GPU_DESCRIPTOR_HANDLE texHandle = mCbvHeap->GetGPUDescriptorHandleForHeapStart();
+            texHandle.ptr += (mtextureSrvOffset + mCurrentFrameIndex) * mCbvUavDescriptorSize;
+
+			mCommandList->SetGraphicsRootDescriptorTable(3, texHandle);
+
+			// 设置采样器
+            // 我超，这里Sampler一直设置失败竟然是忘了重新指定描述符堆（之前只用cbv就没引起注意）
+			ID3D12DescriptorHeap* samplerHeaps[] = { mSamplerHeap.Get() };
+			mCommandList->SetDescriptorHeaps(_countof(samplerHeaps), samplerHeaps);
+
+			 mCommandList->SetGraphicsRootDescriptorTable(4,mSamplerHeap->GetGPUDescriptorHandleForHeapStart());
 
 			mCommandList->DrawIndexedInstanced(ri->IndexCount,1,ri->StartIndexLocation,ri->BaseVertexLocation,0);
             //mCommandList->DrawIndexedInstanced(3,1,0,0,0);

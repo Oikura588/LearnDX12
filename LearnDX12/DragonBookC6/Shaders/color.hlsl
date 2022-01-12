@@ -22,6 +22,7 @@ cbuffer cbPerObject : register(b0)
 {
     float4x4 gWorld; 
     float4x4 gInvWorld;
+    float4x4 gTexTransform;
 };
 cbuffer cbMaterial : register(b1)
 {
@@ -53,12 +54,17 @@ cbuffer cbPass : register(b2)
     float4 gAmbientLight;
     Light gLights[MaxLights];
 }
+// 贴图
+Texture2D gDiffuseMap : register(t0);
+// 采样器状态
+SamplerState gsamPointWrap :register(s0);
 
 struct VertexIn
 {
-  float3 PosL  : POSITION;
-  float4 Color : COLOR;
-  float3 NormalL: NORMAL;
+    float3 PosL  : POSITION;
+    float4 Color : COLOR;
+    float3 NormalL: NORMAL;
+    float2 TexC   : TEXCOORD;
 };
 
 struct VertexOut
@@ -67,41 +73,49 @@ struct VertexOut
     float3 PosW : POSITION;
     float4 Color : COLOR;
     float3 NormalW:NORMAL;
+    float2 TexC : TEXCOORD;
 };
 
 VertexOut VS(VertexIn vin)
 {
-  VertexOut vout;
-	float4 PosW = mul(float4(vin.PosL,1.0f),gWorld);
-  // Transform to homogeneous clip space.
+    VertexOut vout;
+    float4 PosW = mul(float4(vin.PosL,1.0f),gWorld);
+    // Transform to homogeneous clip space.
     vout.PosH = mul(PosW, gViewProj);
     vout.PosW = PosW;
     vout.NormalW = mul(vin.NormalL, transpose((float3x3) gInvWorld));
-  // Just pass vertex color into the pixel shader.
-  vout.Color = vin.Color;
-    
-  return vout;
+    // Just pass vertex color into the pixel shader.
+    vout.Color = vin.Color;
+
+    // 变化Texcoord.
+    float4 texC = mul(float4(vin.TexC,0.f,1.f),gTexTransform);
+    vout.TexC = mul(texC,gMatTransform).xy;
+
+    return vout;
 }
 
 float4 PS(VertexOut pin) : SV_Target
 {
+    // 采样
+    float4 diffuseAlbedo= gDiffuseMap.Sample(gsamPointWrap,pin.TexC);
+    
     pin.NormalW = normalize(pin.NormalW);
     
     // toEye
     float3 toEye = normalize(gEyePosw - pin.PosW);
     
     // 间接光
-    float4 ambient = gAmbientLight * gDiffuseAlbedo;
+    float4 ambient = gAmbientLight * diffuseAlbedo;
     
     // 直接光
     const float shiness = 1.0f - gRoughness;
     float3 shadowFactor = 1.0f;
-    Material mat = { gDiffuseAlbedo, gFresnelR0, shiness };
+    Material mat = { diffuseAlbedo, gFresnelR0, shiness };
     float4 directLight = ComputeLighting(gLights, mat, pin.PosW, pin.NormalW, toEye, shadowFactor);
     
     float4 litColor = (1.0*(ambient + directLight) + 0.0*pin.Color);
     litColor.a = gDiffuseAlbedo.a;
-    return litColor;
+    return diffuseAlbedo;
 }
 
 
