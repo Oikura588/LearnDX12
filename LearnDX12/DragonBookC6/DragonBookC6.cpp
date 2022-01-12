@@ -4,6 +4,7 @@
 #include "../Common/MathHelper.h"
 #include "../Common/UploadBuffer.h"
 #include "../Common/GeometryGenerator.h"
+#include "../Common/DDSTextureLoader.h"
 #include <DirectXColors.h>
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
@@ -17,6 +18,7 @@ struct Vertex
     XMFLOAT3 Pos;
     XMFLOAT4 Color;
     XMFLOAT3 Normal;
+    XMFLOAT2 TexC;
 };
 // 常量缓冲区.每个物体有自己的transform信息.
 struct ObjectConstants
@@ -175,6 +177,14 @@ private:
 
     // 材质
     std::unordered_map<std::string,std::unique_ptr<Material>> mMaterials;
+
+    // 纹理
+    std::unordered_map<std::string,std::unique_ptr<Texture>> mTextures;
+
+    // 纹理描述符堆
+	ComPtr<ID3D12DescriptorHeap> mSrvHeap = nullptr;
+	ComPtr<ID3D12DescriptorHeap> mSamplerHeap = nullptr;
+
 };
 
 BoxApp::BoxApp(HINSTANCE hinstance)
@@ -196,6 +206,74 @@ bool BoxApp::Initialize()
     // 重置命令列表来执行初始化命令
     ThrowIfFailed( mCommandList->Reset(mDirectCmdListAlloc.Get(),nullptr));
     // 初始化.
+
+    // Build texture.
+    {
+		auto woodCrateTex = std::make_unique<Texture>();
+		woodCrateTex->Name = "woodCrateTex";
+		woodCrateTex->FileName = L"Textures/WoodCrate01.dds";
+        std::unique_ptr<uint8_t[]> ddsData;
+        std::vector<D3D12_SUBRESOURCE_DATA> subresData;
+        HRESULT hr = S_OK;
+        hr = DirectX::CreateDDSTextureFromFile12(
+            md3dDevice.Get(),mCommandList.Get(),
+            woodCrateTex->FileName.c_str(),
+            woodCrateTex->Resource, woodCrateTex->UploadHeap
+        );
+        ThrowIfFailed(hr);
+        mTextures[woodCrateTex->Name] = std::move(woodCrateTex);
+    }
+
+
+    // 纹理视图
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
+        srvHeapDesc.NumDescriptors = 1;
+        srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        md3dDevice->CreateDescriptorHeap(
+            &srvHeapDesc,
+            IID_PPV_ARGS(mSrvHeap.GetAddressOf())
+        );
+    }
+    // 纹理视图描述符
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        ID3D12Resource* texResource = mTextures["woodCrateTex"]->Resource.Get();
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; //特殊用途
+        srvDesc.Format = texResource->GetDesc().Format;     //从纹理中读取格式
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;                      // 2D纹理的格式
+        srvDesc.Texture2D.MostDetailedMip = 0;
+        srvDesc.Texture2D.MipLevels = texResource->GetDesc().MipLevels;
+        srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+        md3dDevice->CreateShaderResourceView(texResource,&srvDesc,mSrvHeap->GetCPUDescriptorHandleForHeapStart());
+    }
+
+    // 材质需要采样器
+
+    // 创建采样器堆
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC samplerHeadpDesc = {};
+        samplerHeadpDesc.NumDescriptors = 1;
+        samplerHeadpDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+        samplerHeadpDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+		md3dDevice->CreateDescriptorHeap(
+			&samplerHeadpDesc,
+			IID_PPV_ARGS(mSamplerHeap.GetAddressOf())
+		);
+    }
+    // 创建采样器描述符
+    {
+        D3D12_SAMPLER_DESC samplerDesc = {};
+        samplerDesc.Filter = D3D12_FILTER_MAXIMUM_MIN_MAG_MIP_LINEAR;
+        samplerDesc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+        samplerDesc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+        // 仅限于3D纹理
+        samplerDesc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    }
+  
+    
+
     // Build material.
     {
 		// 创建材质
@@ -239,26 +317,12 @@ bool BoxApp::Initialize()
 	// Build Geometry.和渲染没什么关系了，就是创建buffer并保存起来，绘制的时候用
 	{
 		// 使用工具函数创建顶点和索引的数组
-		GeometryGenerator::MeshData box = GeometryGenerator::CreateBox(1.5f, 0.5f, 1.5f, 3);
-		GeometryGenerator::MeshData grid = GeometryGenerator::CreateGrid(20.0f, 30.0f, 60, 40);
-		GeometryGenerator::MeshData sphere = GeometryGenerator::CreateSphere(0.5f, 20.0f, 20.0f);
-		GeometryGenerator::MeshData cylinder = GeometryGenerator::CreateCylinder(0.5f, 0.3f, 3.0f, 20, 20);
-        GeometryGenerator::MeshData mesh = GeometryGenerator::LoadModel("D:\\Study\\dx12\\LearnDX12\\LearnDX12\\LearnDX12\\DragonBookC6\\Models\\skull.txt");
-
+		GeometryGenerator::MeshData box = GeometryGenerator::CreateBox(1.f, 1.f, 1.0f, 3);
 
 		// 计算每个物体的顶点偏移量
 		UINT boxVertexOffset = 0;
-		UINT gridVertexOffset = box.Vertices.size();
-		UINT sphereVertexOffset = gridVertexOffset + grid.Vertices.size();
-		UINT cylinderVertexOffset = sphereVertexOffset + sphere.Vertices.size();
-        UINT meshVertexOffset = cylinderVertexOffset + cylinder.Vertices.size();
-
 		// 计算索引偏移量
 		UINT boxIndexOffset = 0;
-		UINT girdIndexOffset = box.Indices32.size();
-		UINT sphereIndexOffset = girdIndexOffset + grid.Indices32.size()  ;
-		UINT cylinderIndexOffset = sphereIndexOffset + sphere.Indices32.size();
-        UINT meshIndexOffset = cylinderIndexOffset + cylinder.Indices32.size();
 
 		// 多个子网格绘制参数，存储索引信息.
 		SubmeshGeometry boxSubmesh;
@@ -266,28 +330,8 @@ bool BoxApp::Initialize()
 		boxSubmesh.IndexCount = box.Indices32.size();
 		boxSubmesh.StartIndexLocation = boxIndexOffset;
 
-		SubmeshGeometry gridSubmesh;
-		gridSubmesh.BaseVertexLocation = gridVertexOffset;
-		gridSubmesh.IndexCount = grid.Indices32.size();
-		gridSubmesh.StartIndexLocation = girdIndexOffset;
-
-		SubmeshGeometry sphereSubmesh;
-		sphereSubmesh.BaseVertexLocation = sphereVertexOffset;
-		sphereSubmesh.IndexCount = sphere.Indices32.size();
-		sphereSubmesh.StartIndexLocation = sphereIndexOffset;
-
-		SubmeshGeometry cylinderSubmesh;
-		cylinderSubmesh.BaseVertexLocation = cylinderVertexOffset;
-		cylinderSubmesh.IndexCount = cylinder.Indices32.size();
-		cylinderSubmesh.StartIndexLocation = cylinderIndexOffset;
-
-        SubmeshGeometry meshSubmesh;
-        meshSubmesh.BaseVertexLocation = meshVertexOffset;
-        meshSubmesh.IndexCount = mesh.Indices32.size();
-        meshSubmesh.StartIndexLocation = meshIndexOffset;
-
 		// 把所有的顶点、索引放到一个缓冲区内
-		auto totalVertexCount = box.Vertices.size() + grid.Vertices.size() + sphere.Vertices.size() + cylinder.Vertices.size() + mesh.Vertices.size(); 
+		auto totalVertexCount = box.Vertices.size(); 
 
 		std::vector<Vertex> vertices(totalVertexCount);
 		UINT k = 0;
@@ -298,39 +342,10 @@ bool BoxApp::Initialize()
             vertices[k].Normal = box.Vertices[i].Normal;
 
 		}
-		for (size_t i = 0; i < grid.Vertices.size(); ++i, ++k)
-		{
-			vertices[k].Pos = grid.Vertices[i].Position;
-			vertices[k].Color = XMFLOAT4(DirectX::Colors::ForestGreen);
-			vertices[k].Normal = grid.Vertices[i].Normal;
-
-		}
-		for (size_t i = 0; i < sphere.Vertices.size(); ++i, ++k)
-		{
-			vertices[k].Pos = sphere.Vertices[i].Position;
-			vertices[k].Color = XMFLOAT4(DirectX::Colors::Crimson);
-			vertices[k].Normal = sphere.Vertices[i].Normal;
-		}
-		for (size_t i = 0; i < cylinder.Vertices.size(); ++i, ++k)
-		{
-			vertices[k].Pos = cylinder.Vertices[i].Position;
-			vertices[k].Color = XMFLOAT4(DirectX::Colors::SteelBlue);
-			vertices[k].Normal = cylinder.Vertices[i].Normal;
-		}
-		for (size_t i = 0; i < mesh.Vertices.size(); ++i, ++k)
-		{
-			vertices[k].Pos = mesh.Vertices[i].Position;
-			vertices[k].Color = XMFLOAT4(DirectX::Colors::White);
-			vertices[k].Normal = mesh.Vertices[i].Normal;
-		}
 
 		// 索引的缓冲区.
 		std::vector<std::uint16_t> indices;
 		indices.insert(indices.end(), std::begin(box.GetIndices16()), std::end(box.GetIndices16()));
-		indices.insert(indices.end(), std::begin(grid.GetIndices16()), std::end(grid.GetIndices16()));
-		indices.insert(indices.end(), std::begin(sphere.GetIndices16()), std::end(sphere.GetIndices16()));
-		indices.insert(indices.end(), std::begin(cylinder.GetIndices16()), std::end(cylinder.GetIndices16()));
-        indices.insert(indices.end(),std::begin(mesh.GetIndices16()),std::end(mesh.GetIndices16()));
 
 
 		// 创建几何体和子几何体，存储绘制所用到的Index、Vertex信息
@@ -345,11 +360,6 @@ bool BoxApp::Initialize()
 		mBoxGeo->IndexBufferByteSize = ibByteSize;
 
 		mBoxGeo->DrawArgs["box"] = boxSubmesh;
-		mBoxGeo->DrawArgs["grid"] = gridSubmesh;
-		mBoxGeo->DrawArgs["sphere"] = sphereSubmesh;
-		mBoxGeo->DrawArgs["cylinder"] = cylinderSubmesh;
-        mBoxGeo->DrawArgs["mesh"] = meshSubmesh;
-
 
 		// 创建顶点缓冲区.
 
@@ -509,90 +519,6 @@ bool BoxApp::Initialize()
         boxRenderItem->Mat = mMaterials["stone0"].get();
 
 		mAllRenderItems.push_back(std::move(boxRenderItem));
-
-		auto gridRenderItem = std::make_unique<RenderItem>();
-		gridRenderItem->World = MathHelper::Identity4x4();
-		gridRenderItem->ObjCBOffset = 1;
-		gridRenderItem->PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-		gridRenderItem->Geo = mGeometries["shapeGeo"].get();
-		gridRenderItem->BaseVertexLocation = gridRenderItem->Geo->DrawArgs["grid"].BaseVertexLocation;
-		gridRenderItem->StartIndexLocation = gridRenderItem->Geo->DrawArgs["grid"].StartIndexLocation;
-		gridRenderItem->IndexCount = gridRenderItem->Geo->DrawArgs["grid"].IndexCount;
-        gridRenderItem->Mat = mMaterials["tile0"].get();
-
-		mAllRenderItems.push_back(std::move(gridRenderItem));
-
-        auto meshRenderItem = std::make_unique<RenderItem>();
-        XMStoreFloat4x4(&meshRenderItem->World, XMMatrixTranslation(0.F,3.F,0.F)*XMMatrixScaling(0.3f, 0.3f, 0.3f));
-        meshRenderItem->ObjCBOffset = 2;
-        meshRenderItem->PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-        meshRenderItem->Geo = mGeometries["shapeGeo"].get();
-        meshRenderItem->BaseVertexLocation = meshRenderItem->Geo->DrawArgs["mesh"].BaseVertexLocation;
-		meshRenderItem->StartIndexLocation = meshRenderItem->Geo->DrawArgs["mesh"].StartIndexLocation;
-		meshRenderItem->IndexCount = meshRenderItem->Geo->DrawArgs["mesh"].IndexCount;
-        meshRenderItem->Mat = mMaterials["skullMat"].get();
-
-		mAllRenderItems.push_back(std::move(meshRenderItem));
-
-		// 构建柱体和球体.
-		UINT objCBOffset = 3;
-		for (int i = 0; i < 5; ++i)
-		{
-			auto leftCylRenderItem = std::make_unique<RenderItem>();
-			auto rightCylRenderItem = std::make_unique<RenderItem>();
-			auto leftSphereRenderItem = std::make_unique<RenderItem>();
-			auto rightSphereRenderItem = std::make_unique<RenderItem>();
-
-			XMMATRIX leftCylWorld = XMMatrixTranslation(-5.0f, 1.5f, -10.0f + 5.f * i);
-			XMMATRIX rightCylWorld = XMMatrixTranslation(5.0f, 1.5f, -10.0f + 5.f * i);
-
-			XMMATRIX leftSphereWorld = XMMatrixTranslation(-5.0f, 3.5f, -10.0f + 5.f * i);
-			XMMATRIX rightSphereWorld = XMMatrixTranslation(5.0f, 3.5f, -10.0f + 5.f * i);
-
-			XMStoreFloat4x4(&leftCylRenderItem->World, leftCylWorld);
-			XMStoreFloat4x4(&rightCylRenderItem->World, rightCylWorld);
-			XMStoreFloat4x4(&leftSphereRenderItem->World, leftSphereWorld);
-			XMStoreFloat4x4(&rightSphereRenderItem->World, rightSphereWorld);
-
-			leftCylRenderItem->ObjCBOffset = objCBOffset++;
-			leftCylRenderItem->PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-			leftCylRenderItem->Geo = mGeometries["shapeGeo"].get();
-			leftCylRenderItem->IndexCount = leftCylRenderItem->Geo->DrawArgs["cylinder"].IndexCount;
-			leftCylRenderItem->StartIndexLocation = leftCylRenderItem->Geo->DrawArgs["cylinder"].StartIndexLocation;
-			leftCylRenderItem->BaseVertexLocation = leftCylRenderItem->Geo->DrawArgs["cylinder"].BaseVertexLocation;
-            leftCylRenderItem->Mat = mMaterials["bricks0"].get();
-
-			mAllRenderItems.push_back(std::move(leftCylRenderItem));
-
-			rightCylRenderItem->ObjCBOffset = objCBOffset++;
-			rightCylRenderItem->PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-			rightCylRenderItem->Geo = mGeometries["shapeGeo"].get();
-			rightCylRenderItem->IndexCount = rightCylRenderItem->Geo->DrawArgs["cylinder"].IndexCount;
-			rightCylRenderItem->StartIndexLocation = rightCylRenderItem->Geo->DrawArgs["cylinder"].StartIndexLocation;
-			rightCylRenderItem->BaseVertexLocation = rightCylRenderItem->Geo->DrawArgs["cylinder"].BaseVertexLocation;
-            rightCylRenderItem->Mat = mMaterials["bricks0"].get();
-			mAllRenderItems.push_back(std::move(rightCylRenderItem));
-
-			leftSphereRenderItem->ObjCBOffset = objCBOffset++;
-			leftSphereRenderItem->PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-			leftSphereRenderItem->Geo = mGeometries["shapeGeo"].get();
-			leftSphereRenderItem->IndexCount = leftSphereRenderItem->Geo->DrawArgs["sphere"].IndexCount;
-			leftSphereRenderItem->StartIndexLocation = leftSphereRenderItem->Geo->DrawArgs["sphere"].StartIndexLocation;
-			leftSphereRenderItem->BaseVertexLocation = leftSphereRenderItem->Geo->DrawArgs["sphere"].BaseVertexLocation;
-            leftSphereRenderItem->Mat = mMaterials["stone0"].get();
-
-			mAllRenderItems.push_back(std::move(leftSphereRenderItem));
-
-
-			rightSphereRenderItem->ObjCBOffset = objCBOffset++;
-			rightSphereRenderItem->PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-			rightSphereRenderItem->Geo = mGeometries["shapeGeo"].get();
-			rightSphereRenderItem->IndexCount = rightSphereRenderItem->Geo->DrawArgs["sphere"].IndexCount;
-			rightSphereRenderItem->StartIndexLocation = rightSphereRenderItem->Geo->DrawArgs["sphere"].StartIndexLocation;
-			rightSphereRenderItem->BaseVertexLocation = rightSphereRenderItem->Geo->DrawArgs["sphere"].BaseVertexLocation;
-            rightSphereRenderItem->Mat = mMaterials["stone0"].get();
-			mAllRenderItems.push_back(std::move(rightSphereRenderItem));
-		}
 
 		// 非透明，添加到对应Pass中
 		for (auto& e : mAllRenderItems)
@@ -867,7 +793,8 @@ bool BoxApp::Initialize()
         mInputLayout = {
             {"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0,0,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0,},
             {"COLOR",0,DXGI_FORMAT_R32G32B32A32_FLOAT,0,12,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
-			{"NORMAL",0,DXGI_FORMAT_R32G32B32_FLOAT,0,28,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0}
+			{"NORMAL",0,DXGI_FORMAT_R32G32B32_FLOAT,0,28,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
+            {"TEXCOORD",0,DXGI_FORMAT_R32G32_FLOAT,0,40,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0}
         };
     }
 
