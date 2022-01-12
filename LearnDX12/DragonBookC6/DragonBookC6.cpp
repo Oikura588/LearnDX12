@@ -175,6 +175,9 @@ private:
 
     // 材质
     std::unordered_map<std::string,std::unique_ptr<Material>> mMaterials;
+
+    // 场景光源信息
+    Light mLights[MaxLights];
 };
 
 BoxApp::BoxApp(HINSTANCE hinstance)
@@ -548,6 +551,16 @@ bool BoxApp::Initialize()
 
 			XMMATRIX leftSphereWorld = XMMatrixTranslation(-5.0f, 3.5f, -10.0f + 5.f * i);
 			XMMATRIX rightSphereWorld = XMMatrixTranslation(5.0f, 3.5f, -10.0f + 5.f * i);
+			// 创建点光源
+			mLights[i * 2+0].Position = XMFLOAT3(-5.0f, 6.f, -10.0f + 5.f * i);
+			mLights[i * 2 + 0].FalloffEnd = 20.0f;
+			mLights[i * 2 + 0].Strength = XMFLOAT3(0.8F/5,0.F,0.F);
+
+			mLights[i * 2+1].Position = XMFLOAT3(5.0f, 6.f, -10.0f + 5.f * i);
+			mLights[i * 2 + 1].FalloffEnd = 20.0f;
+			mLights[i * 2 +1].Strength = XMFLOAT3(0.0F, 0.8F/5, 0.00F);
+
+
 
 			XMStoreFloat4x4(&leftCylRenderItem->World, leftCylWorld);
 			XMStoreFloat4x4(&rightCylRenderItem->World, rightCylWorld);
@@ -563,6 +576,7 @@ bool BoxApp::Initialize()
             leftCylRenderItem->Mat = mMaterials["bricks0"].get();
 
 			mAllRenderItems.push_back(std::move(leftCylRenderItem));
+
 
 			rightCylRenderItem->ObjCBOffset = objCBOffset++;
 			rightCylRenderItem->PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
@@ -1094,15 +1108,14 @@ void BoxApp::Update(const GameTimer& gt)
         passConstants.DeltaTime=gt.DeltaTime();
         passConstants.TotalTime = gt.TotalTime();
 
+
         // 环境光
-        passConstants.AmbientLight = XMFLOAT4(0.25f,0.25f,0.35f,1.0f);
-        // 三个光源
-		passConstants.Lights[0].Direction = { 0.57735f, -0.57735f, 0.57735f };
-		passConstants.Lights[0].Strength = { 0.6f, 0.6f, 0.6f };
-		passConstants.Lights[1].Direction = { -0.57735f, -0.57735f, 0.57735f };
-		passConstants.Lights[1].Strength = { 0.3f, 0.3f, 0.3f };
-		passConstants.Lights[2].Direction = { 0.0f, -0.707f, -0.707f };
-		passConstants.Lights[2].Strength = { 0.15f, 0.15f, 0.15f };
+        passConstants.AmbientLight = XMFLOAT4(0.0f,0.0f,0.0f,1.0f);
+        for (int i = 0; i < MaxLights; ++i)
+        {
+            passConstants.Lights[i]=mLights[i];
+        }
+        
 	
         currPassCB->CopyData(0,passConstants);
     }

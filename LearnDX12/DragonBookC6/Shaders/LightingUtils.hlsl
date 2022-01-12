@@ -105,7 +105,7 @@ float3 ComputeSpotLight(Light L,Material mat,float3 pos,float3 normal,float3 toE
 
 // 计算多个光源
 
-#define MaxLights 16
+#define MaxLights 36
 
 float4 ComputeLighting(
 	Light gLights[MaxLights],Material mat,float3 pos,float3 normal,float3 toEye,float3 shadowFactor)
