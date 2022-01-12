@@ -243,7 +243,7 @@ bool BoxApp::Initialize()
 		GeometryGenerator::MeshData grid = GeometryGenerator::CreateGrid(20.0f, 30.0f, 60, 40);
 		GeometryGenerator::MeshData sphere = GeometryGenerator::CreateSphere(0.5f, 20.0f, 20.0f);
 		GeometryGenerator::MeshData cylinder = GeometryGenerator::CreateCylinder(0.5f, 0.3f, 3.0f, 20, 20);
-        GeometryGenerator::MeshData mesh = GeometryGenerator::LoadModel("D:\\Study\\dx12\\LearnDX12\\LearnDX12\\LearnDX12\\DragonBookC6\\Models\\skull.txt");
+        GeometryGenerator::MeshData mesh = GeometryGenerator::LoadModel("Models\\skull.txt");
 
 
 		// 计算每个物体的顶点偏移量
