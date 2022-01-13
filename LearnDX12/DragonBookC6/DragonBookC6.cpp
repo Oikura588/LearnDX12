@@ -1001,6 +1001,13 @@ void BoxApp::Update(const GameTimer& gt)
 		XMMATRIX view = XMMatrixLookAtLH(pos, target, up);
 		XMStoreFloat4x4(&mView, view);
     }
+    // 更新材质
+    {
+        Material* mat =  mMaterials["stone0"].get();
+        
+		XMStoreFloat4x4(&mat->MatTransform,XMMatrixTranslation(-0.5f,-0.5f,0.f)*XMMatrixRotationZ(gt.TotalTime())*XMMatrixTranslation(0.5f,0.5f,0.f) );
+        mat->NumFramesDirty = gNumFrameResources;
+    }
 
 
     // 循环获取FrameResource
@@ -1052,7 +1059,8 @@ void BoxApp::Update(const GameTimer& gt)
 				MaterialConstants matConstants;
 				matConstants.DiffuseAlbedo = mat->DiffuseAlbedo;
 				matConstants.FresnelR0 = mat->FresnelR0;
-				//matConstants.MaterialTransform = mat->MatTransform;
+               
+				XMStoreFloat4x4(&matConstants.MaterialTransform, XMMatrixTranspose(XMLoadFloat4x4(&mat->MatTransform)));
 				matConstants.Roughness = mat->Roughness;
 
 				currMaterialCB->CopyData(mat->MatCBIndex, matConstants);
