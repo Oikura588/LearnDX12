@@ -23,6 +23,7 @@
 cbuffer cbPerObject : register(b0)
 {
     float4x4 gWorld; 
+    float4x4 gTexTransform;
 };
 
 // material constant.
@@ -58,10 +59,15 @@ cbuffer cbPass : register(b2)
     Light gLights[MaxLights];
 }
 
+// 纹理
+Texture2D gDiffuseMap : register(t0);
+SamplerState gSampler : register(s0);
+// 采样器
 struct VertexIn
 {
     float3 PosL  : POSITION;
     float3 NormalL : NORMAL;
+    float2 TexC : TEXCOORD;
 };
 
 struct VertexOut
@@ -69,6 +75,7 @@ struct VertexOut
     float4 PosH  : SV_POSITION;
     float3 PosW  : POSITION;
     float3 NormalW : NORMAL;
+    float2 TexC : TEXCOORD;
 };
 
 VertexOut VS(VertexIn vin)
@@ -81,11 +88,15 @@ VertexOut VS(VertexIn vin)
     vout.PosW = PosW;
     // 假设这里是等比缩放，这样的化变化矩阵就是世界矩阵本身，否则要用逆转矩阵.
     vout.NormalW = mul(vin.NormalL, (float3x3)gWorld);
+    
+    vout.TexC = mul(mul(float4(vin.TexC, 0, 1), gTexTransform),gMatTransform).xy;
+    
     return vout;
 }
 
 float4 PS(VertexOut pin) : SV_Target
 {
+    float4 diffuseAlpbedo = gDiffuseMap.Sample(gSampler, pin.TexC);
     // 顶点法线插值后可能非规范化
     pin.NormalW = normalize(pin.NormalW);
     
@@ -104,7 +115,7 @@ float4 PS(VertexOut pin) : SV_Target
     float4 litColor = ambient + directLight;
     litColor.a = gDiffuseAlbedo.a;
     
-    return litColor;
+    return diffuseAlpbedo;
 }
 
 

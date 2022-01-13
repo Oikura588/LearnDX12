@@ -4,6 +4,7 @@
 #include "../Common/MathHelper.h"
 #include "../Common/UploadBuffer.h"
 #include "../Common/GeometryGenerator.h"
+#include "../Common/DDSTextureLoader.h"
 #include <DirectXColors.h>
 #include <malloc.h>
 #include <ppl.h>
@@ -17,17 +18,19 @@ using namespace DirectX;
 using namespace DirectX::PackedVector;
 
 // FrameResources的数目.RenderItem和App都需要这个数据.
-static const  int gNumFrameResources=1;
+static const  int gNumFrameResources=3;
 // 顶点信息
 struct Vertex
 {
     XMFLOAT3 Pos;
     XMFLOAT3 Normal;
+    XMFLOAT2 TexCoord;
 };
 // 常量缓冲区.每个物体有自己的transform信息.
 struct ObjectConstants
 {
     XMFLOAT4X4 World = MathHelper::Identity4x4();
+	XMFLOAT4X4 TexTransform = MathHelper::Identity4x4();
 };
 // 材质常量缓冲区
 struct MaterialConstants
@@ -36,7 +39,7 @@ struct MaterialConstants
     DirectX::XMFLOAT3 FresnelR0;
     float Roughness;
     // 纹理贴图章节中用到
-    DirectX::XMFLOAT4X4 MaterialTransform;
+    DirectX::XMFLOAT4X4 MaterialTransform = MathHelper::Identity4x4();
 };
 // 存储绘制一个物体需要的数据的结构，随着不同的程序有所差别.
 struct RenderItem
@@ -409,6 +412,14 @@ private:
     // 太阳位置
     float mSunTheta = 1.25f*XM_PI;
     float mSunPhi = XM_PIDIV4;
+
+    // 纹理
+	std::unordered_map<std::string, std::unique_ptr<Texture>> mTextures;
+
+    // 采样器堆
+    ComPtr<ID3D12DescriptorHeap> mSamplerHeap;
+    // CBV SRV heap
+    ComPtr<ID3D12DescriptorHeap> mSrvHeap;
 };
 
 BoxApp::BoxApp(HINSTANCE hinstance)
@@ -430,7 +441,78 @@ bool BoxApp::Initialize()
     // 重置命令列表来执行初始化命令
     ThrowIfFailed( mCommandList->Reset(mDirectCmdListAlloc.Get(),nullptr));
     // 初始化.
-    
+
+    // 加载纹理
+    {
+        auto grassTex = std::make_unique<Texture>();
+        grassTex->Name = "grassTex";
+        grassTex->FileName = L"Textures\\grass.dds";
+        
+        ThrowIfFailed(DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(),mCommandList.Get(),grassTex->FileName.c_str(),grassTex->Resource,grassTex->UploadHeap));
+
+        auto waterTex = std::make_unique<Texture>();
+        waterTex->Name = "waterTex";
+        waterTex->FileName = L"Textures\\water1.dds";
+		ThrowIfFailed(DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(), mCommandList.Get(), waterTex->FileName.c_str(), waterTex->Resource, waterTex->UploadHeap));
+
+        mTextures[grassTex->Name] = std::move(grassTex);
+        mTextures[waterTex->Name] = std::move(waterTex);
+    }
+    // 创建采样器堆
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC samplerHeapDesc = {};
+        samplerHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        samplerHeapDesc.NumDescriptors = 1;
+        samplerHeapDesc.Type=D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+
+        md3dDevice->CreateDescriptorHeap(&samplerHeapDesc,IID_PPV_ARGS(mSamplerHeap.GetAddressOf()));
+    }
+    // 创建采样器
+    {
+        D3D12_SAMPLER_DESC samplerDesc = {};
+        samplerDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+        samplerDesc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+        samplerDesc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+        samplerDesc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+        samplerDesc.Filter = D3D12_FILTER_COMPARISON_MIN_LINEAR_MAG_POINT_MIP_LINEAR;
+        samplerDesc.MaxAnisotropy = 1;
+        samplerDesc.MipLODBias = 0;
+        samplerDesc.MaxLOD = D3D12_FLOAT32_MAX;
+
+        md3dDevice->CreateSampler(&samplerDesc,mSamplerHeap->GetCPUDescriptorHandleForHeapStart());
+    }
+    // 创建Srv heap 以及srv
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
+        srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        srvHeapDesc.NumDescriptors = mTextures.size();
+        srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+
+        md3dDevice->CreateDescriptorHeap(&srvHeapDesc,IID_PPV_ARGS(mSrvHeap.GetAddressOf()));
+
+        auto grassTex = mTextures["grassTex"]->Resource;
+		auto waterTex = mTextures["waterTex"]->Resource;
+
+		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+		srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; //特殊用途
+		srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;                      // 2D纹理的格式
+		srvDesc.Texture2D.MostDetailedMip = 0;
+		srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+
+       
+        // 第一个
+        D3D12_CPU_DESCRIPTOR_HANDLE srvHandle= mSrvHeap->GetCPUDescriptorHandleForHeapStart();
+		srvDesc.Format = grassTex->GetDesc().Format;     //从纹理中读取格式
+        srvDesc.Texture2D.MipLevels = grassTex->GetDesc().MipLevels;
+		md3dDevice->CreateShaderResourceView(grassTex.Get(), &srvDesc, srvHandle);
+        
+        // 创第二个
+        srvHandle.ptr += mCbvUavDescriptorSize;
+        srvDesc.Format = waterTex->GetDesc().Format;
+        srvDesc.Texture2D.MipLevels = waterTex->GetDesc().MipLevels;
+		md3dDevice->CreateShaderResourceView(waterTex.Get(), &srvDesc, srvHandle);
+
+    }
     // 创建材质
     {
         auto grass = std::make_unique<Material>();
@@ -440,13 +522,15 @@ bool BoxApp::Initialize()
         grass->FresnelR0 = XMFLOAT3(0.01f,0.01f,0.01f);
         grass->Roughness = 0.125f;
         grass->NumFramesDirty = gNumFrameResources;
+        grass->DiffuseSrvHeapIndex = 0;
 
         auto water = std::make_unique<Material>();
         water->MatCBIndex = 1;
-        water->DiffuseAlbedo = XMFLOAT4(0.f, 0.2f, 0.6f, 1.0f);
+        water->DiffuseAlbedo = XMFLOAT4(0.2f, 0.2f, 0.8f, 1.0f);
         water->FresnelR0 = XMFLOAT3(0.1f, 0.1f, 0.1f);
         water->Roughness = 0.0f;
         water->NumFramesDirty = gNumFrameResources;
+        water->DiffuseSrvHeapIndex = 1;
 
         mMaterials["grass"] = std::move(grass);
         mMaterials["water"] = std::move(water);
@@ -469,6 +553,7 @@ bool BoxApp::Initialize()
             vertices[i].Pos = p;
             vertices[i].Pos.y = GetHillsHeight(p.x,p.z);
             vertices[i].Normal = GetHillsNormal(p.x,p.z);
+            vertices[i].TexCoord = grid.Vertices[i].TexC;
            
         }
         std::vector<std::uint16_t> indices = grid.GetIndices16();
@@ -735,6 +820,7 @@ bool BoxApp::Initialize()
 		landRenderItem->StartIndexLocation = landRenderItem->Geo->DrawArgs["grid"].StartIndexLocation;
 		landRenderItem->IndexCount = landRenderItem->Geo->DrawArgs["grid"].IndexCount;
         landRenderItem->Mat = mMaterials["grass"].get();
+        XMStoreFloat4x4(&landRenderItem->Mat->MatTransform,XMMatrixScaling(5.f,5.f,1.f));
 
 		mAllRenderItems.push_back(std::move(landRenderItem));
 
@@ -748,6 +834,7 @@ bool BoxApp::Initialize()
 		waveRenderItem->IndexCount = waveRenderItem->Geo->DrawArgs["grid"].IndexCount;
         mWavesRitem = waveRenderItem.get();
         waveRenderItem->Mat = mMaterials["water"].get();
+		//XMStoreFloat4x4(&waveRenderItem->Mat->MatTransform, XMMatrixScaling(5.f, 5.f, 1.f));
 
         mAllRenderItems.push_back(std::move(waveRenderItem));
 
@@ -781,7 +868,7 @@ bool BoxApp::Initialize()
     {
         // root signature -> root parameter -> type/table -> range.
         
-        D3D12_ROOT_PARAMETER slotRootParameter[3];
+        D3D12_ROOT_PARAMETER slotRootParameter[5];
         // object 
         slotRootParameter[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
         slotRootParameter[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
@@ -802,7 +889,37 @@ bool BoxApp::Initialize()
 		slotRootParameter[2].Descriptor.ShaderRegister = 2;
 		// 暂时不需要填充Descriptor，绘制的时候设置即可.
 
+        // srv
+		D3D12_DESCRIPTOR_RANGE srvRange;
+		srvRange.BaseShaderRegister = 0;
+		srvRange.NumDescriptors = 1;
+		srvRange.OffsetInDescriptorsFromTableStart = 0;
+		srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+		srvRange.RegisterSpace = 0;
 
+		D3D12_ROOT_DESCRIPTOR_TABLE srvTable;
+		srvTable.NumDescriptorRanges = 1;
+		srvTable.pDescriptorRanges = &srvRange;
+
+        slotRootParameter[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        slotRootParameter[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        slotRootParameter[3].DescriptorTable = srvTable;
+
+        // Sampler
+        D3D12_DESCRIPTOR_RANGE samplerRange;
+        samplerRange.BaseShaderRegister = 0;
+        samplerRange.NumDescriptors = 1;
+        samplerRange.OffsetInDescriptorsFromTableStart = 0;
+        samplerRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+        samplerRange.RegisterSpace = 0;
+        
+        D3D12_ROOT_DESCRIPTOR_TABLE samplerTable;
+        samplerTable.NumDescriptorRanges = 1;
+        samplerTable.pDescriptorRanges = &samplerRange;
+        // 思考:采样器只能用表?
+        slotRootParameter[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        slotRootParameter[4].DescriptorTable = samplerTable;
+        slotRootParameter[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
         
         // 创建RootSignature.要使用Blob
         // d3d12规定，必须将根签名的描述布局进行序列化，才可以传入CreateRootSignature方法.
@@ -810,7 +927,7 @@ bool BoxApp::Initialize()
         
         D3D12_ROOT_SIGNATURE_DESC rootSignatureDesc;
         rootSignatureDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-        rootSignatureDesc.NumParameters = 3;
+        rootSignatureDesc.NumParameters = 5;
         rootSignatureDesc.pParameters = slotRootParameter;
         rootSignatureDesc.pStaticSamplers = nullptr;
         rootSignatureDesc.NumStaticSamplers = 0;
@@ -897,7 +1014,8 @@ bool BoxApp::Initialize()
     {
         mInputLayout = {
             {"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0,0,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0,},
-            {"NORMAL",0,DXGI_FORMAT_R32G32B32_FLOAT,0,12,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0}
+            {"NORMAL",0,DXGI_FORMAT_R32G32B32_FLOAT,0,12,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
+            {"TEXCOORD",0,DXGI_FORMAT_R32G32_FLOAT,0,24,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0}
         };
     }
 
@@ -1062,7 +1180,23 @@ void BoxApp::Update(const GameTimer& gt)
 		XMMATRIX view = XMMatrixLookAtLH(pos, target, up);
 		XMStoreFloat4x4(&mView, view);
     }
-
+    // 更新波浪的材质transform
+    {
+        auto waterMat = mMaterials["water"].get();
+        float tu = waterMat->MatTransform(3,0);
+        float tv = waterMat->MatTransform(3,1);
+        
+        tu += 0.1f *gt.DeltaTime();
+        tv += 0.02 *gt.DeltaTime();
+        
+        if(tu>=1.0f)
+            tu-=1.0f;
+        if(tv>=1.0f)
+            tv-=1.0f;
+        waterMat->MatTransform(3,0) = tu;
+        waterMat->MatTransform(3,1) = tv;
+        waterMat->NumFramesDirty = gNumFrameResources;
+    }
 
     // 循环获取FrameResource
     // 只有CPU比GPU快很多的情况需要特殊处理，其他情况下如果CPU很慢，每次Update后GPU都能直接Draw完成开始下次Update
@@ -1123,7 +1257,7 @@ void BoxApp::Update(const GameTimer& gt)
         passConstants.TotalTime = gt.TotalTime();
 
         // 光照
-        passConstants.AmbientLight = {0.25f,0.25f,0.25f,1.f};
+        passConstants.AmbientLight = {0.5f,0.5f,0.5f,1.f};
         XMFLOAT3 Direction;
         Direction.x = sinf(mSunPhi)*cosf(mSunTheta);
 		Direction.y = cosf(mSunPhi);
@@ -1159,6 +1293,10 @@ void BoxApp::Update(const GameTimer& gt)
 			Vertex v;
 			v.Pos = mWaves->Position(i);
 			v.Normal = mWaves->Normal(i);
+
+            // u的坐标可以看作是从[-w/2,w/2]映射到[0,1]
+            v.TexCoord.x = v.Pos.x/mWaves->Width() + 0.5f;
+            v.TexCoord.y = -v.Pos.z/mWaves->Depth()+0.5f;
 			currWaveVB->CopyData(i, v);
 
 		}
@@ -1175,7 +1313,8 @@ void BoxApp::Update(const GameTimer& gt)
                 MaterialConstants matConstants;
                 matConstants.DiffuseAlbedo = mat->DiffuseAlbedo;
                 matConstants.FresnelR0 = mat->FresnelR0;
-                matConstants.MaterialTransform = mat->MatTransform;
+                
+                XMStoreFloat4x4(&matConstants.MaterialTransform , XMMatrixTranspose(XMLoadFloat4x4(&mat->MatTransform)));
                 matConstants.Roughness = mat->Roughness;
 
                 currMaterialCB->CopyData(mat->MatCBIndex,matConstants);
@@ -1190,14 +1329,15 @@ void BoxApp::Draw(const GameTimer& gt)
 {
     //FlushCommandQueue();
     // cmd相关Reset
-    mDirectCmdListAlloc->Reset();   // cmdlist 执行完后才能重置,即FlushCommandQuene之后.
+    auto mCurrentAlloc = mCurrentFrameResource->CmdAlloc;
+    mCurrentAlloc->Reset();   // cmdlist 执行完后才能重置,即FlushCommandQuene之后.
     if (mIsWireframe)
     {
-        mCommandList->Reset(mDirectCmdListAlloc.Get(),mPSOs["wireframePSO"].Get());
+        mCommandList->Reset(mCurrentAlloc.Get(),mPSOs["wireframePSO"].Get());
     }
     else
     { 
-        mCommandList->Reset(mDirectCmdListAlloc.Get(),mPSOs["defaultPSO"].Get());  // 传入Queue后就可以重置.
+        mCommandList->Reset(mCurrentAlloc.Get(),mPSOs["defaultPSO"].Get());  // 传入Queue后就可以重置.
     }
     mCommandList->RSSetViewports(1,&mScreenViewport);
     mCommandList->RSSetScissorRects(1,&mScissorRect);
@@ -1220,6 +1360,17 @@ void BoxApp::Draw(const GameTimer& gt)
 
     // 描述符相关.用来更新常量缓冲区
     mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
+
+    // 设置采样器堆和采样器
+	ID3D12DescriptorHeap* descriptorHeap[] = { mSamplerHeap.Get() };
+	mCommandList->SetDescriptorHeaps(_countof(descriptorHeap), descriptorHeap);
+
+	// 设置采样器
+	mCommandList->SetGraphicsRootDescriptorTable(4, mSamplerHeap->GetGPUDescriptorHandleForHeapStart());
+
+    // 设置常量堆
+	ID3D12DescriptorHeap* srvDescriptorHeap[] = { mSrvHeap.Get() };
+	mCommandList->SetDescriptorHeaps(_countof(srvDescriptorHeap), srvDescriptorHeap);
 
     int passCbvIndex = mPassCbvOffset + mCurrentFrameIndex;
     mCommandList->SetGraphicsRootConstantBufferView(2,mCurrentFrameResource->PassCB->Resource()->GetGPUVirtualAddress());
@@ -1246,8 +1397,29 @@ void BoxApp::Draw(const GameTimer& gt)
             D3D12_GPU_VIRTUAL_ADDRESS matAddress = mCurrentFrameResource->mMaterialCB->Resource()->GetGPUVirtualAddress();
             matAddress+=(ri->Mat->MatCBIndex)* matCBByteSize;
             mCommandList->SetGraphicsRootConstantBufferView(1,matAddress);
+
+            //D3D12_GPU_VIRTUAL_ADDRESS texAddress;
+            //if (ri->Mat->DiffuseSrvHeapIndex == 0)
+            //{
+            //    texAddress = mTextures["grassTex"]->Resource->GetGPUVirtualAddress();
+            //}
+            //else if(ri->Mat->DiffuseSrvHeapIndex == 1)
+            //{
+            //    texAddress =mTextures["waterTex"]->Resource->GetGPUVirtualAddress();
+
+            //}
+			D3D12_GPU_DESCRIPTOR_HANDLE texAddress = mSrvHeap->GetGPUDescriptorHandleForHeapStart();
+            texAddress.ptr += (ri->Mat->DiffuseSrvHeapIndex)*mCbvUavDescriptorSize;
+
+            // 设置纹理
+             
+            mCommandList->SetGraphicsRootDescriptorTable(3, texAddress);
+
+
 			mCommandList->DrawIndexedInstanced(ri->IndexCount,1,ri->StartIndexLocation,ri->BaseVertexLocation,0);
             //mCommandList->DrawIndexedInstanced(3,1,0,0,0);
+
+            
 		}
 
 	}
