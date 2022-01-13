@@ -455,8 +455,15 @@ bool BoxApp::Initialize()
         waterTex->FileName = L"Textures\\water1.dds";
 		ThrowIfFailed(DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(), mCommandList.Get(), waterTex->FileName.c_str(), waterTex->Resource, waterTex->UploadHeap));
 
+		auto fenceTex = std::make_unique<Texture>();
+		fenceTex->Name = "fenceTex";
+		fenceTex->FileName = L"Textures\\WireFence.dds";
+
+		ThrowIfFailed(DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(), mCommandList.Get(), fenceTex->FileName.c_str(), fenceTex->Resource, fenceTex->UploadHeap));
+
         mTextures[grassTex->Name] = std::move(grassTex);
         mTextures[waterTex->Name] = std::move(waterTex);
+        mTextures[fenceTex->Name] = std::move(fenceTex);
     }
     // 创建采样器堆
     {
@@ -492,7 +499,7 @@ bool BoxApp::Initialize()
 
         auto grassTex = mTextures["grassTex"]->Resource;
 		auto waterTex = mTextures["waterTex"]->Resource;
-
+        auto fenceTex = mTextures["fenceTex"]->Resource;
 		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
 		srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; //特殊用途
 		srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;                      // 2D纹理的格式
@@ -512,13 +519,19 @@ bool BoxApp::Initialize()
         srvDesc.Texture2D.MipLevels = waterTex->GetDesc().MipLevels;
 		md3dDevice->CreateShaderResourceView(waterTex.Get(), &srvDesc, srvHandle);
 
+        // 第三个
+		srvHandle.ptr += mCbvUavDescriptorSize;
+		srvDesc.Format = fenceTex->GetDesc().Format;
+		srvDesc.Texture2D.MipLevels = fenceTex->GetDesc().MipLevels;
+		md3dDevice->CreateShaderResourceView(fenceTex.Get(), &srvDesc, srvHandle);
+
     }
     // 创建材质
     {
         auto grass = std::make_unique<Material>();
         grass->Name = "grass";
         grass->MatCBIndex = 0;
-        grass->DiffuseAlbedo = XMFLOAT4(0.2f,0.6f,0.2f,1.0f);
+        grass->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
         grass->FresnelR0 = XMFLOAT3(0.01f,0.01f,0.01f);
         grass->Roughness = 0.125f;
         grass->NumFramesDirty = gNumFrameResources;
@@ -526,37 +539,62 @@ bool BoxApp::Initialize()
 
         auto water = std::make_unique<Material>();
         water->MatCBIndex = 1;
-        water->DiffuseAlbedo = XMFLOAT4(0.2f, 0.2f, 0.8f, 1.0f);
+        water->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 0.5f);
         water->FresnelR0 = XMFLOAT3(0.1f, 0.1f, 0.1f);
         water->Roughness = 0.0f;
         water->NumFramesDirty = gNumFrameResources;
         water->DiffuseSrvHeapIndex = 1;
 
+        auto wirefence = std::make_unique<Material>();
+        wirefence->MatCBIndex = 2;
+        wirefence->DiffuseSrvHeapIndex = 2;
+        wirefence->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
+		wirefence->FresnelR0 = XMFLOAT3(0.1f, 0.1f, 0.1f);
+		wirefence->Roughness = 0.25f;
+        wirefence->NumFramesDirty = gNumFrameResources;
+
         mMaterials["grass"] = std::move(grass);
         mMaterials["water"] = std::move(water);
+        mMaterials["wirefence"] = std::move(wirefence);
         
     }
 	// Build Geometry.和渲染没什么关系了，就是创建buffer并保存起来，绘制的时候用
 	{
 		// 使用工具函数创建顶点和索引的数组
 		GeometryGenerator::MeshData grid = GeometryGenerator::CreateGrid(160.0f, 160.0f, 50, 50);
+        GeometryGenerator::MeshData box = GeometryGenerator::CreateBox(8.0f,8.f,8.f,0);
 
 		SubmeshGeometry gridSubmesh;
 		gridSubmesh.BaseVertexLocation = 0;
 		gridSubmesh.IndexCount = grid.Indices32.size();
 		gridSubmesh.StartIndexLocation = 0;
 
-		std::vector<Vertex> vertices(grid.Vertices.size());
-        for (size_t i = 0; i < vertices.size(); ++i)
+        SubmeshGeometry boxSubmesh;
+        boxSubmesh.BaseVertexLocation = grid.Vertices.size();
+        boxSubmesh.StartIndexLocation = grid.Indices32.size();
+        boxSubmesh.IndexCount = box.Indices32.size();
+
+
+		std::vector<Vertex> vertices(grid.Vertices.size()+box.Vertices.size());
+        int k=0;
+        for (size_t i = 0; i < grid.Vertices.size(); ++i,++k)
         {
             auto& p = grid.Vertices[i].Position;
-            vertices[i].Pos = p;
-            vertices[i].Pos.y = GetHillsHeight(p.x,p.z);
-            vertices[i].Normal = GetHillsNormal(p.x,p.z);
-            vertices[i].TexCoord = grid.Vertices[i].TexC;
+            vertices[k].Pos = p;
+            vertices[k].Pos.y = GetHillsHeight(p.x,p.z);
+            vertices[k].Normal = GetHillsNormal(p.x,p.z);
+            vertices[k].TexCoord = grid.Vertices[i].TexC;
            
         }
+		for (size_t i = 0; i < box.Vertices.size(); ++i,++k)
+		{
+			auto& p = box.Vertices[i].Position;
+			vertices[k].Pos = p;
+			vertices[k].Normal = box.Vertices[i].Normal;
+			vertices[k].TexCoord = box.Vertices[i].TexC;
+		}
         std::vector<std::uint16_t> indices = grid.GetIndices16();
+        indices.insert(indices.end(),box.GetIndices16().begin(),box.GetIndices16().end());
 
 
 		// 创建几何体和子几何体，存储绘制所用到的Index、Vertex信息
@@ -571,6 +609,7 @@ bool BoxApp::Initialize()
 		mBoxGeo->IndexBufferByteSize = ibByteSize;
 
 		mBoxGeo->DrawArgs["grid"] = gridSubmesh;
+        mBoxGeo->DrawArgs["box"] = boxSubmesh;
 	
 
 		// 创建顶点缓冲区.
@@ -718,12 +757,12 @@ bool BoxApp::Initialize()
 
 
         // 创建 waves 的索引缓冲区
-        mWaves = std::make_unique<Waves>(128,128,1.f,0.03f,4.f,0.2f);
+        mWaves = std::make_unique<Waves>(64,64,1.f,0.03f,4.f,0.2f);
         indices.resize(3 * mWaves->TriangleCount());
         //std::vector<std::uint16_t> indices();
         int m = mWaves->RowCount();
         int n = mWaves->ColumnCount();
-        int k = 0;
+        k = 0;
         for (int i = 0; i < m - 1; ++i)
         {
             for (int j = 0; j < n - 1; ++j)
@@ -823,6 +862,19 @@ bool BoxApp::Initialize()
         XMStoreFloat4x4(&landRenderItem->Mat->MatTransform,XMMatrixScaling(5.f,5.f,1.f));
 
 		mAllRenderItems.push_back(std::move(landRenderItem));
+
+		auto boxRenderItem = std::make_unique<RenderItem>();
+		XMStoreFloat4x4(&boxRenderItem->World, XMMatrixScaling(2.F, 2.F, 2.F)* XMMatrixTranslation(0., 0.5f, 0.0f));
+		boxRenderItem->ObjCBOffset = 0;
+		boxRenderItem->Geo = mGeometries["landGeo"].get();
+		boxRenderItem->PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+		boxRenderItem->BaseVertexLocation = boxRenderItem->Geo->DrawArgs["box"].BaseVertexLocation;
+		boxRenderItem->StartIndexLocation = boxRenderItem->Geo->DrawArgs["box"].StartIndexLocation;
+		boxRenderItem->IndexCount = boxRenderItem->Geo->DrawArgs["box"].IndexCount;
+		boxRenderItem->Mat = mMaterials["wirefence"].get();
+		XMStoreFloat4x4(&boxRenderItem->Mat->MatTransform, XMMatrixScaling(2.f, 2.f, 2.f));
+
+		mAllRenderItems.push_back(std::move(boxRenderItem));
 
         auto waveRenderItem = std::make_unique<RenderItem>();
         waveRenderItem->World = MathHelper::Identity4x4();
@@ -1097,7 +1149,7 @@ bool BoxApp::Initialize()
         pipelineStateDesc.SampleDesc.Quality = 0;
 
         ThrowIfFailed( md3dDevice->CreateGraphicsPipelineState(
-            &pipelineStateDesc,IID_PPV_ARGS(&mPSOs["defaultPSO"])
+            &pipelineStateDesc,IID_PPV_ARGS(&mPSOs["opaquePSO"])
         ));
 
         // 创建线框模式pso.
@@ -1107,7 +1159,32 @@ bool BoxApp::Initialize()
 		ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
 			&pipelineStateDesc, IID_PPV_ARGS(&mPSOs["wireframePSO"])
 		));
+        // 创建透明的PSO
+        D3D12_RENDER_TARGET_BLEND_DESC rtBlendDesc = {};
+        rtBlendDesc.BlendEnable = true;
+        rtBlendDesc.LogicOpEnable = false;
+        rtBlendDesc.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+        rtBlendDesc.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+        rtBlendDesc.BlendOp = D3D12_BLEND_OP_ADD;
+        rtBlendDesc.SrcBlendAlpha = D3D12_BLEND_ONE;
+        rtBlendDesc.DestBlendAlpha = D3D12_BLEND_ZERO;
+        rtBlendDesc.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        rtBlendDesc.LogicOp = D3D12_LOGIC_OP_NOOP;
+        rtBlendDesc.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
         
+        blendDesc;
+        blendDesc.AlphaToCoverageEnable = false;
+        blendDesc.IndependentBlendEnable = false;
+        blendDesc.RenderTarget[0] = rtBlendDesc;
+        rasterizerDesc.FillMode = D3D12_FILL_MODE_SOLID;
+		pipelineStateDesc.RasterizerState = rasterizerDesc;
+        pipelineStateDesc.BlendState = blendDesc;
+		ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
+			&pipelineStateDesc, IID_PPV_ARGS(&mPSOs["transparentPSO"])
+		));
+
+
+
         
     }
 
@@ -1337,7 +1414,7 @@ void BoxApp::Draw(const GameTimer& gt)
     }
     else
     { 
-        mCommandList->Reset(mCurrentAlloc.Get(),mPSOs["defaultPSO"].Get());  // 传入Queue后就可以重置.
+        mCommandList->Reset(mCurrentAlloc.Get(),mPSOs["opaquePSO"].Get());  // 传入Queue后就可以重置.
     }
     mCommandList->RSSetViewports(1,&mScreenViewport);
     mCommandList->RSSetScissorRects(1,&mScissorRect);
@@ -1383,7 +1460,9 @@ void BoxApp::Draw(const GameTimer& gt)
 
 		auto objCB = mCurrentFrameResource->ObjectsCB->Resource();
 
-		for (size_t i = 0; i < mOpaqueRenderItems.size(); ++i)
+        // 最后一个是水，先渲染不透明物体
+        mCommandList->SetPipelineState(mPSOs["opaquePSO"].Get());
+		for (size_t i = 0; i < mOpaqueRenderItems.size()-1; ++i)
 		{
 			auto ri = mOpaqueRenderItems[i];
             // 更新object常量
@@ -1418,9 +1497,42 @@ void BoxApp::Draw(const GameTimer& gt)
 
 			mCommandList->DrawIndexedInstanced(ri->IndexCount,1,ri->StartIndexLocation,ri->BaseVertexLocation,0);
             //mCommandList->DrawIndexedInstanced(3,1,0,0,0);
-
-            
 		}
+
+        // 渲染最后的水
+		mCommandList->SetPipelineState(mPSOs["transparentPSO"].Get());
+		auto ri = mOpaqueRenderItems[mOpaqueRenderItems.size() - 1];
+		// 更新object常量
+		mCommandList->IASetVertexBuffers(0, 1, &ri->Geo->VertexBufferView());
+		mCommandList->IASetIndexBuffer(&ri->Geo->IndexBufferView());
+		mCommandList->IASetPrimitiveTopology(ri->PrimitiveTopology);
+		D3D12_GPU_VIRTUAL_ADDRESS cbAddress = mCurrentFrameResource->ObjectsCB->Resource()->GetGPUVirtualAddress();
+		cbAddress += (ri->ObjCBOffset) * objCBByteSize;
+		mCommandList->SetGraphicsRootConstantBufferView(0, cbAddress);
+		// 设置材质
+		D3D12_GPU_VIRTUAL_ADDRESS matAddress = mCurrentFrameResource->mMaterialCB->Resource()->GetGPUVirtualAddress();
+		matAddress += (ri->Mat->MatCBIndex) * matCBByteSize;
+		mCommandList->SetGraphicsRootConstantBufferView(1, matAddress);
+
+		//D3D12_GPU_VIRTUAL_ADDRESS texAddress;
+		//if (ri->Mat->DiffuseSrvHeapIndex == 0)
+		//{
+		//    texAddress = mTextures["grassTex"]->Resource->GetGPUVirtualAddress();
+		//}
+		//else if(ri->Mat->DiffuseSrvHeapIndex == 1)
+		//{
+		//    texAddress =mTextures["waterTex"]->Resource->GetGPUVirtualAddress();
+
+		//}
+		D3D12_GPU_DESCRIPTOR_HANDLE texAddress = mSrvHeap->GetGPUDescriptorHandleForHeapStart();
+		texAddress.ptr += (ri->Mat->DiffuseSrvHeapIndex) * mCbvUavDescriptorSize;
+
+		// 设置纹理
+
+		mCommandList->SetGraphicsRootDescriptorTable(3, texAddress);
+
+
+		mCommandList->DrawIndexedInstanced(ri->IndexCount, 1, ri->StartIndexLocation, ri->BaseVertexLocation, 0);
 
 	}
 

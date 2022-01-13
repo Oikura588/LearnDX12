@@ -96,7 +96,7 @@ VertexOut VS(VertexIn vin)
 
 float4 PS(VertexOut pin) : SV_Target
 {
-    float4 diffuseAlpbedo = gDiffuseMap.Sample(gSampler, pin.TexC);
+    float4 diffuseAlpbedo = gDiffuseMap.Sample(gSampler, pin.TexC)*gDiffuseAlbedo;
     // 顶点法线插值后可能非规范化
     pin.NormalW = normalize(pin.NormalW);
     
@@ -104,16 +104,16 @@ float4 PS(VertexOut pin) : SV_Target
     float3 toEye = normalize(gEyePosw - pin.PosW);
     
     // 间接光
-    float4 ambient = gAmbientLight * gDiffuseAlbedo;
+    float4 ambient = gAmbientLight * diffuseAlpbedo;
     
     // 直接光
     const float shininess = 1.0f - gRoughness;
-    Material mat = { gDiffuseAlbedo, gFresnelR0, shininess };
+    Material mat = { diffuseAlpbedo, gFresnelR0, shininess };
     
     float3 shadowFactor = 1.0f;
     float4 directLight = ComputeLighting(gLights, mat,pin.PosW, pin.NormalW, toEye,shadowFactor);
     float4 litColor = ambient + directLight;
-    litColor.a = gDiffuseAlbedo.a;
+    litColor.a = diffuseAlpbedo.a;
     
     return diffuseAlpbedo;
 }
