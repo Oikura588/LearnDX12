@@ -55,6 +55,12 @@ cbuffer cbPass : register(b2)
     
     // 环境光
     float4 gAmbientLight;
+
+    // 雾效
+    float4 gFogColor;
+    float  gFogStart;
+    float  gFogRange;
+    float2 cbPad2;
     // 光源
     Light gLights[MaxLights];
 }
@@ -120,9 +126,14 @@ float4 PS(VertexOut pin) : SV_Target
     float3 shadowFactor = 1.0f;
     float4 directLight = ComputeLighting(gLights, mat,pin.PosW, pin.NormalW, toEye,shadowFactor);
     float4 litColor = ambient + directLight;
+
+    // 处理雾效
+	float fogAmount = saturate(length(pin.PosW - gEyePosw) / (gFogRange));
+	litColor = lerp(litColor, gFogColor,fogAmount);
+    
     litColor.a = diffuseAlpbedo.a;
     
-    return diffuseAlpbedo;
+	return litColor;
 }
 
 

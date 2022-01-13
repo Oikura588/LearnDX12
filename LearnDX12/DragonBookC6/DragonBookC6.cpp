@@ -88,6 +88,12 @@ struct PassConstants
 
     // 环境光
     XMFLOAT4 AmbientLight;
+
+    // 雾效
+    XMFLOAT4 FogColor;
+    float    FogStart;
+    float    FogRange;
+    XMFLOAT2 cbPad2;
     // 直接光
     Light    Lights[MaxLights];
 };
@@ -1382,6 +1388,11 @@ void BoxApp::Update(const GameTimer& gt)
 		Direction.z = sinf(mSunPhi) *sinf(mSunTheta);
         passConstants.Lights[0].Direction = Direction;
 		passConstants.Lights[0].Strength = XMFLOAT3(1.F, 1.F, 0.9F);
+
+        // 雾效
+        passConstants.FogColor = XMFLOAT4(0.7f,0.7f,0.7f,1.f);
+        passConstants.FogStart = 1.0f;
+        passConstants.FogRange = 100.0f;
 
 
         currPassCB->CopyData(0,passConstants);
