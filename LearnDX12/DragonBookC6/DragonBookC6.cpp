@@ -4,6 +4,7 @@
 #include "../Common/MathHelper.h"
 #include "../Common/UploadBuffer.h"
 #include "../Common/GeometryGenerator.h"
+#include "../Common/DDSTextureLoader.h"
 #include <DirectXColors.h>
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
@@ -17,12 +18,14 @@ struct Vertex
     XMFLOAT3 Pos;
     XMFLOAT4 Color;
     XMFLOAT3 Normal;
+    XMFLOAT2 TexC;
 };
 // 常量缓冲区.每个物体有自己的transform信息.
 struct ObjectConstants
 {
     XMFLOAT4X4 World = MathHelper::Identity4x4();
     XMFLOAT4X4 InvWorld = MathHelper::Identity4x4();
+    XMFLOAT4X4 TexTransform = MathHelper::Identity4x4();
 };
 
 struct MaterialConstants
@@ -30,7 +33,7 @@ struct MaterialConstants
     DirectX::XMFLOAT4 DiffuseAlbedo;
     DirectX::XMFLOAT3 FresnelR0;
     float Roughness;
-    DirectX::XMFLOAT4 MaterialTransform;
+    DirectX::XMFLOAT4X4 MaterialTransform;
 };
 
 // 存储绘制一个物体需要的数据的结构，随着不同的程序有所差别.
@@ -136,6 +139,7 @@ private:
     ComPtr<ID3D12DescriptorHeap> mCbvHeap       = nullptr;
 	UINT mPassCbvOffset;
     UINT mMaterialCbvOffset;
+	UINT mSrvOffset;
 
     // 存储所有渲染项.
     std::vector<std::unique_ptr<RenderItem>> mAllRenderItems;
@@ -175,6 +179,12 @@ private:
 
     // 材质
     std::unordered_map<std::string,std::unique_ptr<Material>> mMaterials;
+
+    // 纹理
+    std::unordered_map<std::string,std::unique_ptr<Texture>> mTextures;
+
+    // 采样器堆
+    ComPtr<ID3D12DescriptorHeap> mSamplerHeap;
 };
 
 BoxApp::BoxApp(HINSTANCE hinstance)
@@ -196,6 +206,58 @@ bool BoxApp::Initialize()
     // 重置命令列表来执行初始化命令
     ThrowIfFailed( mCommandList->Reset(mDirectCmdListAlloc.Get(),nullptr));
     // 初始化.
+
+    // 初始化纹理
+    {
+        auto brickTex = std::make_unique<Texture>();
+        brickTex->Name = "bricksTex";
+        brickTex->FileName = L"Textures\\bricks3.dds";
+        ThrowIfFailed( DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(),mCommandList.Get(),brickTex->FileName.c_str(),brickTex->Resource,brickTex->UploadHeap));
+
+        auto stoneTex = std::make_unique<Texture>();
+        stoneTex->Name = "stoneTex";
+        stoneTex->FileName = L"Textures\\stone.dds";
+		ThrowIfFailed(DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(), mCommandList.Get(), stoneTex->FileName.c_str(), stoneTex->Resource, stoneTex->UploadHeap));
+
+		auto tileTex = std::make_unique<Texture>();
+		tileTex->Name = "tileTex";
+		tileTex->FileName = L"Textures\\tile.dds";
+		ThrowIfFailed(DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(), mCommandList.Get(), tileTex->FileName.c_str(), tileTex->Resource, tileTex->UploadHeap));
+
+        mTextures[brickTex->Name] = std::move(brickTex);
+		mTextures[stoneTex->Name] = std::move(stoneTex);
+		mTextures[tileTex->Name] = std::move(tileTex);
+    }
+
+    // 初始化采样器堆
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC samplerHeapDesc = {};
+        samplerHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        samplerHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+        samplerHeapDesc.NumDescriptors = 1;
+
+        md3dDevice->CreateDescriptorHeap(
+            &samplerHeapDesc,IID_PPV_ARGS(mSamplerHeap.GetAddressOf())
+        );
+    }
+    // 初始化采样器
+    {
+        D3D12_SAMPLER_DESC samplerDesc = {};
+        samplerDesc.Filter  =D3D12_FILTER_MAXIMUM_MIN_LINEAR_MAG_MIP_POINT;
+        samplerDesc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+        samplerDesc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+        // 仅限于3D纹理
+        samplerDesc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+
+        samplerDesc.MinLOD = 0;
+        samplerDesc.MaxLOD = D3D12_FLOAT32_MAX;
+        samplerDesc.MipLODBias = 0.0f;
+        samplerDesc.MaxAnisotropy = 1;
+        samplerDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+
+        md3dDevice->CreateSampler(&samplerDesc,mSamplerHeap->GetCPUDescriptorHandleForHeapStart());
+    }
+
     // Build material.
     {
 		// 创建材质
@@ -206,6 +268,8 @@ bool BoxApp::Initialize()
 		bricks0->DiffuseAlbedo = XMFLOAT4(Colors::ForestGreen);
 		bricks0->FresnelR0 = XMFLOAT3(0.02f, 0.02f, 0.02f);
 		bricks0->Roughness = 0.1f;
+        bricks0->DiffuseSrvHeapIndex = 0;           // texture 0
+		bricks0->MatTransform = MathHelper::Identity4x4();          
 
 		auto stone0 = std::make_unique<Material>();
 		stone0->Name = "stone0";
@@ -214,6 +278,9 @@ bool BoxApp::Initialize()
 		stone0->DiffuseAlbedo = XMFLOAT4(Colors::LightSteelBlue);
 		stone0->FresnelR0 = XMFLOAT3(0.05f, 0.05f, 0.05f);
 		stone0->Roughness = 0.3f;
+        stone0->DiffuseSrvHeapIndex = 1;            // texture 1
+        stone0->MatTransform = MathHelper::Identity4x4();
+
 
 		auto tile0 = std::make_unique<Material>();
 		tile0->Name = "tile0";
@@ -222,6 +289,9 @@ bool BoxApp::Initialize()
 		tile0->DiffuseAlbedo = XMFLOAT4(Colors::LightGray);
 		tile0->FresnelR0 = XMFLOAT3(0.02f, 0.02f, 0.02f);
 		tile0->Roughness = 0.2f;
+        tile0->DiffuseSrvHeapIndex = 2;             // texture 2
+        tile0->MatTransform = MathHelper::Identity4x4();
+
 
 		auto skullMat = std::make_unique<Material>();
 		skullMat->Name = "skullMat";
@@ -230,6 +300,8 @@ bool BoxApp::Initialize()
 		skullMat->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
 		skullMat->FresnelR0 = XMFLOAT3(0.05f, 0.05f, 0.05);
 		skullMat->Roughness = 0.3f;
+        skullMat->MatTransform = MathHelper::Identity4x4();
+
 
 		mMaterials["bricks0"] = std::move(bricks0);
 		mMaterials["stone0"] = std::move(stone0);
@@ -296,6 +368,7 @@ bool BoxApp::Initialize()
 			vertices[k].Pos = box.Vertices[i].Position;
 			vertices[k].Color = XMFLOAT4(DirectX::Colors::DarkGreen);
             vertices[k].Normal = box.Vertices[i].Normal;
+            vertices[k].TexC = box.Vertices[i].TexC;
 
 		}
 		for (size_t i = 0; i < grid.Vertices.size(); ++i, ++k)
@@ -303,6 +376,8 @@ bool BoxApp::Initialize()
 			vertices[k].Pos = grid.Vertices[i].Position;
 			vertices[k].Color = XMFLOAT4(DirectX::Colors::ForestGreen);
 			vertices[k].Normal = grid.Vertices[i].Normal;
+			vertices[k].TexC = grid.Vertices[i].TexC;
+
 
 		}
 		for (size_t i = 0; i < sphere.Vertices.size(); ++i, ++k)
@@ -310,18 +385,24 @@ bool BoxApp::Initialize()
 			vertices[k].Pos = sphere.Vertices[i].Position;
 			vertices[k].Color = XMFLOAT4(DirectX::Colors::Crimson);
 			vertices[k].Normal = sphere.Vertices[i].Normal;
+			vertices[k].TexC = sphere.Vertices[i].TexC;
+
 		}
 		for (size_t i = 0; i < cylinder.Vertices.size(); ++i, ++k)
 		{
 			vertices[k].Pos = cylinder.Vertices[i].Position;
 			vertices[k].Color = XMFLOAT4(DirectX::Colors::SteelBlue);
 			vertices[k].Normal = cylinder.Vertices[i].Normal;
+			vertices[k].TexC = cylinder.Vertices[i].TexC;
+
 		}
 		for (size_t i = 0; i < mesh.Vertices.size(); ++i, ++k)
 		{
 			vertices[k].Pos = mesh.Vertices[i].Position;
 			vertices[k].Color = XMFLOAT4(DirectX::Colors::White);
 			vertices[k].Normal = mesh.Vertices[i].Normal;
+			vertices[k].TexC = mesh.Vertices[i].TexC;
+
 		}
 
 		// 索引的缓冲区.
@@ -614,12 +695,14 @@ bool BoxApp::Initialize()
 	{
 		UINT objCount = (UINT)mOpaqueRenderItems.size();
         UINT matCount = (UINT)mMaterials.size();
+        UINT textureCount = (UINT)mTextures.size();
         mMaterialCbvOffset = objCount*gNumFrameResources;
 		mPassCbvOffset = mMaterialCbvOffset + matCount*gNumFrameResources;
+        mSrvOffset = mPassCbvOffset + 1*gNumFrameResources;
 		D3D12_DESCRIPTOR_HEAP_DESC heapDesc;
 		heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 		// 描述符个数等于物体数量*Frame数量，每个Frame还有Pass和材质数据，所以额外加上
-		heapDesc.NumDescriptors = (objCount + 1 +matCount) * gNumFrameResources;
+		heapDesc.NumDescriptors = (objCount + 1 +matCount + textureCount) * gNumFrameResources;
 		// Shader可见，因为需要读取
 		heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 		heapDesc.NodeMask = 0;
@@ -703,6 +786,47 @@ bool BoxApp::Initialize()
 			md3dDevice->CreateConstantBufferView(&cbvDesc,cbHandle);
 
 		}
+
+        // 纹理资源
+        for (int frameIndex = 0; frameIndex < gNumFrameResources; ++frameIndex)
+        {
+            D3D12_CPU_DESCRIPTOR_HANDLE cbHandle = mCbvHeap->GetCPUDescriptorHandleForHeapStart();
+            cbHandle.ptr +=(mSrvOffset+frameIndex*mTextures.size())*mCbvUavDescriptorSize;
+            D3D12_SHADER_RESOURCE_VIEW_DESC shaderResourceDesc={};
+            shaderResourceDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            shaderResourceDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            shaderResourceDesc.Texture2D.MostDetailedMip = 0;
+            shaderResourceDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+
+
+            auto texResource = mTextures["bricksTex"]->Resource;
+			auto stoneResource = mTextures["stoneTex"]->Resource;
+			auto tileResource = mTextures["tileTex"]->Resource;
+
+            shaderResourceDesc.Format = texResource->GetDesc().Format;
+            shaderResourceDesc.Texture2D.MipLevels = texResource->GetDesc().MipLevels;
+            md3dDevice->CreateShaderResourceView(
+                texResource.Get(),&shaderResourceDesc, cbHandle
+            );
+
+            // 第二个纹理
+            cbHandle.ptr+=mCbvUavDescriptorSize;
+            shaderResourceDesc.Format = stoneResource->GetDesc().Format;
+            shaderResourceDesc.Texture2D.MipLevels = stoneResource->GetDesc().MipLevels;
+			md3dDevice->CreateShaderResourceView(
+				stoneResource.Get(), &shaderResourceDesc, cbHandle
+			);
+
+            // 第三个纹理
+			 // 第二个纹理
+			cbHandle.ptr += mCbvUavDescriptorSize;
+			shaderResourceDesc.Format = tileResource->GetDesc().Format;
+			shaderResourceDesc.Texture2D.MipLevels = tileResource->GetDesc().MipLevels;
+			md3dDevice->CreateShaderResourceView(
+                tileResource.Get(), &shaderResourceDesc, cbHandle
+			);
+           
+        }
     }
     
     // 初始化RootSignature，把常量缓冲区绑定到GPU上供Shader读取.
@@ -748,10 +872,35 @@ bool BoxApp::Initialize()
         passDescTable.pDescriptorRanges =&passDescRange;
         passDescTable.NumDescriptorRanges = 1;
 
+        // SRV
+		D3D12_DESCRIPTOR_RANGE srvDescRange;
+		srvDescRange.NumDescriptors = 1;
+		srvDescRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+		srvDescRange.RegisterSpace = 0;
+		srvDescRange.BaseShaderRegister = 0;
+		srvDescRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+		D3D12_ROOT_DESCRIPTOR_TABLE srvDescTable;
+		srvDescTable.pDescriptorRanges = &srvDescRange;
+		srvDescTable.NumDescriptorRanges = 1;
+
+        // Sampler
+		D3D12_DESCRIPTOR_RANGE samplerDescRange;
+		samplerDescRange.NumDescriptors = 1;
+		samplerDescRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+		samplerDescRange.RegisterSpace = 0;
+		samplerDescRange.BaseShaderRegister = 0;
+		samplerDescRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+		D3D12_ROOT_DESCRIPTOR_TABLE samplerDescTable;
+		samplerDescTable.pDescriptorRanges = &samplerDescRange;
+		samplerDescTable.NumDescriptorRanges = 1;
+
+
         
 
         
-        D3D12_ROOT_PARAMETER slotRootParameter[3];
+        D3D12_ROOT_PARAMETER slotRootParameter[5];
         // object 
         slotRootParameter[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         slotRootParameter[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
@@ -766,6 +915,16 @@ bool BoxApp::Initialize()
         slotRootParameter[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         slotRootParameter[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
         slotRootParameter[2].DescriptorTable = passDescTable;
+
+        // srv
+        slotRootParameter[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        slotRootParameter[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        slotRootParameter[3].DescriptorTable = srvDescTable;
+
+        // Sampler
+        slotRootParameter[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        slotRootParameter[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        slotRootParameter[4].DescriptorTable = samplerDescTable;
         
         
         // 创建RootSignature.要使用Blob
@@ -774,7 +933,7 @@ bool BoxApp::Initialize()
         
         D3D12_ROOT_SIGNATURE_DESC rootSignatureDesc;
         rootSignatureDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-        rootSignatureDesc.NumParameters = 3;
+        rootSignatureDesc.NumParameters = 5;
         rootSignatureDesc.pParameters = slotRootParameter;
         rootSignatureDesc.pStaticSamplers = nullptr;
         rootSignatureDesc.NumStaticSamplers = 0;
@@ -867,7 +1026,8 @@ bool BoxApp::Initialize()
         mInputLayout = {
             {"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0,0,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0,},
             {"COLOR",0,DXGI_FORMAT_R32G32B32A32_FLOAT,0,12,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
-			{"NORMAL",0,DXGI_FORMAT_R32G32B32_FLOAT,0,28,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0}
+			{"NORMAL",0,DXGI_FORMAT_R32G32B32_FLOAT,0,28,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
+			{"TEXCOORD",0,DXGI_FORMAT_R32G32_FLOAT,0,40,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0}
         };
     }
 
@@ -1063,7 +1223,7 @@ void BoxApp::Update(const GameTimer& gt)
 				MaterialConstants matConstants;
 				matConstants.DiffuseAlbedo = mat->DiffuseAlbedo;
 				matConstants.FresnelR0 = mat->FresnelR0;
-				//matConstants.MaterialTransform = mat->MatTransform;
+				matConstants.MaterialTransform = mat->MatTransform;
 				matConstants.Roughness = mat->Roughness;
 
 				currMaterialCB->CopyData(mat->MatCBIndex, matConstants);
@@ -1163,10 +1323,17 @@ void BoxApp::Draw(const GameTimer& gt)
     // 指定渲染视图
     mCommandList->OMSetRenderTargets(1,&CurrentBackBufferDescriptor(),true,&DepthStencilDescriptor());
 
-    // 描述符相关.用来更新常量缓冲区
-    ID3D12DescriptorHeap* descHeaps[] =  {mCbvHeap.Get()};
-    mCommandList->SetDescriptorHeaps(_countof(descHeaps),descHeaps);
+
     mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
+	// 设置采样器
+	// 描述符相关.用来更新采样器
+	ID3D12DescriptorHeap* samplerHeaps[] = { mSamplerHeap.Get() };
+	mCommandList->SetDescriptorHeaps(_countof(samplerHeaps), samplerHeaps);
+	mCommandList->SetGraphicsRootDescriptorTable(4, mSamplerHeap->GetGPUDescriptorHandleForHeapStart());
+
+	// 描述符相关.用来更新常量缓冲区
+	ID3D12DescriptorHeap* descHeaps[] = { mCbvHeap.Get() };
+	mCommandList->SetDescriptorHeaps(_countof(descHeaps), descHeaps);
 
     int passCbvIndex = mPassCbvOffset + mCurrentFrameIndex;
     auto passCbvHandle = mCbvHeap->GetGPUDescriptorHandleForHeapStart();
@@ -1194,6 +1361,12 @@ void BoxApp::Draw(const GameTimer& gt)
             D3D12_GPU_DESCRIPTOR_HANDLE matHandle= mCbvHeap->GetGPUDescriptorHandleForHeapStart();
             matHandle.ptr += (mMaterialCbvOffset + mCurrentFrameIndex * mMaterials.size() + ri->Mat->MatCBIndex) * mCbvUavDescriptorSize;
 			mCommandList->SetGraphicsRootDescriptorTable(1, matHandle);
+
+            // 设置纹理
+            D3D12_GPU_DESCRIPTOR_HANDLE texHandle = mCbvHeap->GetGPUDescriptorHandleForHeapStart();
+            texHandle.ptr +=(mSrvOffset + mCurrentFrameIndex*mTextures.size() + ri->Mat->DiffuseSrvHeapIndex) *mCbvUavDescriptorSize;
+            mCommandList->SetGraphicsRootDescriptorTable(3,texHandle);
+
 
 			mCommandList->DrawIndexedInstanced(ri->IndexCount,1,ri->StartIndexLocation,ri->BaseVertexLocation,0);
             //mCommandList->DrawIndexedInstanced(3,1,0,0,0);

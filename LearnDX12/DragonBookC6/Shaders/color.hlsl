@@ -22,6 +22,7 @@ cbuffer cbPerObject : register(b0)
 {
     float4x4 gWorld; 
     float4x4 gInvWorld;
+    float4x4 gTexTransform;
 };
 cbuffer cbMaterial : register(b1)
 {
@@ -59,6 +60,7 @@ struct VertexIn
   float3 PosL  : POSITION;
   float4 Color : COLOR;
   float3 NormalL: NORMAL;
+    float2 TexC : TEXCOORD;
 };
 
 struct VertexOut
@@ -67,7 +69,11 @@ struct VertexOut
     float3 PosW : POSITION;
     float4 Color : COLOR;
     float3 NormalW:NORMAL;
+    float2 TexC : TEXCOORD;
 };
+
+Texture2D gDiffuseTex : register(t0);
+SamplerState gsamPointWrap : register(s0);
 
 VertexOut VS(VertexIn vin)
 {
@@ -80,23 +86,26 @@ VertexOut VS(VertexIn vin)
   // Just pass vertex color into the pixel shader.
   vout.Color = vin.Color;
     
+    float4 texC = mul(float4(vin.TexC, 0, 1), gTexTransform);
+    vout.TexC = mul(texC, gMatTransform).xy;
   return vout;
 }
 
 float4 PS(VertexOut pin) : SV_Target
 {
+    float4 diffuseAlbedo = gDiffuseTex.Sample(gsamPointWrap, pin.TexC);
     pin.NormalW = normalize(pin.NormalW);
     
     // toEye
     float3 toEye = normalize(gEyePosw - pin.PosW);
     
     // 间接光
-    float4 ambient = gAmbientLight * gDiffuseAlbedo;
+    float4 ambient = gAmbientLight * diffuseAlbedo;
     
     // 直接光
     const float shiness = 1.0f - gRoughness;
     float3 shadowFactor = 1.0f;
-    Material mat = { gDiffuseAlbedo, gFresnelR0, shiness };
+    Material mat = { diffuseAlbedo, gFresnelR0, shiness };
     float4 directLight = ComputeLighting(gLights, mat, pin.PosW, pin.NormalW, toEye, shadowFactor);
     
     float4 litColor = (1.0*(ambient + directLight) + 0.0*pin.Color);
