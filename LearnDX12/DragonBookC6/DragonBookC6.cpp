@@ -1208,9 +1208,8 @@ bool BoxApp::Initialize()
         rtBlendDesc.DestBlendAlpha = D3D12_BLEND_ZERO;
         rtBlendDesc.BlendOpAlpha = D3D12_BLEND_OP_ADD;
         rtBlendDesc.LogicOp = D3D12_LOGIC_OP_NOOP;
-        rtBlendDesc.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        rtBlendDesc.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_BLUE|D3D12_COLOR_WRITE_ENABLE_RED;
         
-        blendDesc;
         blendDesc.AlphaToCoverageEnable = false;
         blendDesc.IndependentBlendEnable = false;
         blendDesc.RenderTarget[0] = rtBlendDesc;
@@ -1226,6 +1225,7 @@ bool BoxApp::Initialize()
         {
 			reinterpret_cast<BYTE*>(mShaders["alphatestPS"]->GetBufferPointer()),mShaders["alphatestPS"]->GetBufferSize()
         };
+        pipelineStateDesc.BlendState.RenderTarget[0] = rtDesc;
         pipelineStateDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
 		ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
 			&pipelineStateDesc, IID_PPV_ARGS(&mPSOs["alphatestPSO"])
