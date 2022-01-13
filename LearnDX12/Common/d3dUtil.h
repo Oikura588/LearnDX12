@@ -155,6 +155,9 @@ struct Material
     DirectX::XMFLOAT3 FresnelR0 = {0.01,0.01f,0.01f};
     float Roughness = 0.25f;
     DirectX::XMFLOAT4X4 MatTransform = MathHelper::Identity4x4();
+
+    // diffuse 贴图的索引,目前材质只包含一个漫反射纹理
+    int DiffuseSrvHeapIndex = -1;
 };
 
 // 纹理
