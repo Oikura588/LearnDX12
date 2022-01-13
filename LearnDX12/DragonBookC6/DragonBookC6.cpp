@@ -1021,6 +1021,7 @@ bool BoxApp::Initialize()
         target = "vs_5_0";
         mShaders["vShader"] = nullptr;
         mShaders["pShader"] = nullptr;
+        mShaders["alphatestPS"] = nullptr;
         
         hr = D3DCompileFromFile(
             filename.c_str(),
@@ -1039,21 +1040,48 @@ bool BoxApp::Initialize()
         }
         ThrowIfFailed(hr);
 
+		// 编译ps.
+
+		errorCode = nullptr;
+		hr = S_OK;
+		filename = L"Shaders\\color.hlsl";
+		entrypoint = "PS";
+		target = "ps_5_0";
+		hr = D3DCompileFromFile(
+			filename.c_str(),
+			nullptr,
+			D3D_COMPILE_STANDARD_FILE_INCLUDE,
+			entrypoint.c_str(),
+			target.c_str(),
+			compileFlags,
+			0,
+			&mShaders["pShader"],
+			&errorCode
+		);
+		if (errorCode != nullptr)
+		{
+			OutputDebugStringA((char*)errorCode->GetBufferPointer());
+		}
+		ThrowIfFailed(hr);
+
+      
+
+        // 编译Alphatest ps
+        // 这里后面必须有两个NULL,NULL，否则会编译错误0xff.
+        const D3D_SHADER_MACRO alphaTestDefines [] = {"ALPHA_TEST","1",NULL,NULL};
+        
         errorCode = nullptr;
         hr = S_OK;
-        // 编译ps.
-        filename = L"Shaders\\color.hlsl";
-        entrypoint = "PS";
-        target = "ps_5_0";
+      
         hr = D3DCompileFromFile(
           filename.c_str(),
-          nullptr,
+          alphaTestDefines,
           D3D_COMPILE_STANDARD_FILE_INCLUDE,
           entrypoint.c_str(),
           target.c_str(),
           compileFlags,
           0,
-          &mShaders["pShader"],
+          &mShaders["alphatestPS"],
           &errorCode
       );
         if(errorCode!=nullptr)
@@ -1061,6 +1089,10 @@ bool BoxApp::Initialize()
             OutputDebugStringA((char*)errorCode->GetBufferPointer());
         }
         ThrowIfFailed(hr);
+
+		
+
+
     }
     // 输入布局
     {
@@ -1183,6 +1215,15 @@ bool BoxApp::Initialize()
 			&pipelineStateDesc, IID_PPV_ARGS(&mPSOs["transparentPSO"])
 		));
 
+        // 创建AlphatestPSO。
+        pipelineStateDesc.PS = 
+        {
+			reinterpret_cast<BYTE*>(mShaders["alphatestPS"]->GetBufferPointer()),mShaders["alphatestPS"]->GetBufferSize()
+        };
+        pipelineStateDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+		ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
+			&pipelineStateDesc, IID_PPV_ARGS(&mPSOs["alphatestPSO"])
+		));
 
 
         
@@ -1461,8 +1502,9 @@ void BoxApp::Draw(const GameTimer& gt)
 		auto objCB = mCurrentFrameResource->ObjectsCB->Resource();
 
         // 最后一个是水，先渲染不透明物体
+        // 倒数第二个是Box(虽然总共就三个，但是懒得分层了)
         mCommandList->SetPipelineState(mPSOs["opaquePSO"].Get());
-		for (size_t i = 0; i < mOpaqueRenderItems.size()-1; ++i)
+		for (size_t i = 0; i < mOpaqueRenderItems.size()-2; ++i)
 		{
 			auto ri = mOpaqueRenderItems[i];
             // 更新object常量
@@ -1498,8 +1540,52 @@ void BoxApp::Draw(const GameTimer& gt)
 			mCommandList->DrawIndexedInstanced(ri->IndexCount,1,ri->StartIndexLocation,ri->BaseVertexLocation,0);
             //mCommandList->DrawIndexedInstanced(3,1,0,0,0);
 		}
+        // 渲染box
+        {
+			mCommandList->SetPipelineState(mPSOs["alphatestPSO"].Get());
+			auto ri = mOpaqueRenderItems[mOpaqueRenderItems.size()-2];
+			// 更新object常量
+			mCommandList->IASetVertexBuffers(0, 1, &ri->Geo->VertexBufferView());
+			mCommandList->IASetIndexBuffer(&ri->Geo->IndexBufferView());
+			mCommandList->IASetPrimitiveTopology(ri->PrimitiveTopology);
+			D3D12_GPU_VIRTUAL_ADDRESS cbAddress = mCurrentFrameResource->ObjectsCB->Resource()->GetGPUVirtualAddress();
+			cbAddress += (ri->ObjCBOffset) * objCBByteSize;
+			mCommandList->SetGraphicsRootConstantBufferView(0, cbAddress);
+			// 设置材质
+			D3D12_GPU_VIRTUAL_ADDRESS matAddress = mCurrentFrameResource->mMaterialCB->Resource()->GetGPUVirtualAddress();
+			matAddress += (ri->Mat->MatCBIndex) * matCBByteSize;
+			mCommandList->SetGraphicsRootConstantBufferView(1, matAddress);
 
+			//D3D12_GPU_VIRTUAL_ADDRESS texAddress;
+			//if (ri->Mat->DiffuseSrvHeapIndex == 0)
+			//{
+			//    texAddress = mTextures["grassTex"]->Resource->GetGPUVirtualAddress();
+			//}
+			//else if(ri->Mat->DiffuseSrvHeapIndex == 1)
+			//{
+			//    texAddress =mTextures["waterTex"]->Resource->GetGPUVirtualAddress();
+
+			//}
+			D3D12_GPU_DESCRIPTOR_HANDLE texAddress = mSrvHeap->GetGPUDescriptorHandleForHeapStart();
+			texAddress.ptr += (ri->Mat->DiffuseSrvHeapIndex) * mCbvUavDescriptorSize;
+
+			// 设置纹理
+
+			mCommandList->SetGraphicsRootDescriptorTable(3, texAddress);
+
+
+			mCommandList->DrawIndexedInstanced(ri->IndexCount, 1, ri->StartIndexLocation, ri->BaseVertexLocation, 0);
+			//mCommandList->DrawIndexedInstanced(3,1,0,0,0);
+
+
+
+        }
+	
+        
         // 渲染最后的水
+        {
+
+        
 		mCommandList->SetPipelineState(mPSOs["transparentPSO"].Get());
 		auto ri = mOpaqueRenderItems[mOpaqueRenderItems.size() - 1];
 		// 更新object常量
@@ -1533,7 +1619,7 @@ void BoxApp::Draw(const GameTimer& gt)
 
 
 		mCommandList->DrawIndexedInstanced(ri->IndexCount, 1, ri->StartIndexLocation, ri->BaseVertexLocation, 0);
-
+        }
 	}
 
     // 绘制完成后改变资源状态.

@@ -96,7 +96,14 @@ VertexOut VS(VertexIn vin)
 
 float4 PS(VertexOut pin) : SV_Target
 {
+
     float4 diffuseAlpbedo = gDiffuseMap.Sample(gSampler, pin.TexC)*gDiffuseAlbedo;
+
+#ifdef ALPHA_TEST
+    // alpha 小于0 则剔除
+    clip(diffuseAlpbedo.a - 0.1f);
+#endif
+
     // 顶点法线插值后可能非规范化
     pin.NormalW = normalize(pin.NormalW);
     
