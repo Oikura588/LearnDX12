@@ -56,6 +56,7 @@ cbuffer cbPass : register(b2)
 }
 // 贴图
 Texture2D gDiffuseMap : register(t0);
+Texture2D gAlphaMap : register(t1);
 // 采样器状态
 SamplerState gsamPointWrap :register(s0);
 
@@ -98,6 +99,8 @@ float4 PS(VertexOut pin) : SV_Target
 {
     // 采样
     float4 diffuseAlbedo= gDiffuseMap.Sample(gsamPointWrap,pin.TexC);
+    float4 alpha = gAlphaMap.Sample(gsamPointWrap, pin.TexC);
+
     
     pin.NormalW = normalize(pin.NormalW);
     
@@ -114,7 +117,7 @@ float4 PS(VertexOut pin) : SV_Target
     float4 directLight = ComputeLighting(gLights, mat, pin.PosW, pin.NormalW, toEye, shadowFactor);
     
     float4 litColor = (1.0*(ambient + directLight) + 0.0*pin.Color);
-    litColor.a = gDiffuseAlbedo.a;
+    diffuseAlbedo*=alpha;
     return diffuseAlbedo;
 }
 

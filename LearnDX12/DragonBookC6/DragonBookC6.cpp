@@ -211,19 +211,30 @@ bool BoxApp::Initialize()
 
     // Build texture.
     {
-		auto woodCrateTex = std::make_unique<Texture>();
-		woodCrateTex->Name = "woodCrateTex";
-		woodCrateTex->FileName = L"Textures/WoodCrate01.dds";
-        std::unique_ptr<uint8_t[]> ddsData;
-        std::vector<D3D12_SUBRESOURCE_DATA> subresData;
+		auto flareTex = std::make_unique<Texture>();
+		flareTex->Name = "flare";
+		flareTex->FileName = L"Textures/flare.dds";
         HRESULT hr = S_OK;
         hr = DirectX::CreateDDSTextureFromFile12(
             md3dDevice.Get(),mCommandList.Get(),
-            woodCrateTex->FileName.c_str(),
-            woodCrateTex->Resource, woodCrateTex->UploadHeap
+            flareTex->FileName.c_str(),
+            flareTex->Resource, flareTex->UploadHeap
         );
         ThrowIfFailed(hr);
-        mTextures[woodCrateTex->Name] = std::move(woodCrateTex);
+        mTextures[flareTex->Name] = std::move(flareTex);
+
+        auto flareAlphaTex = std::make_unique<Texture>();
+        flareAlphaTex->Name = "flareAlpha";
+        flareAlphaTex->FileName = L"Textures/flareAlpha.dds";
+
+		hr = S_OK;
+		hr = DirectX::CreateDDSTextureFromFile12(
+			md3dDevice.Get(), mCommandList.Get(),
+            flareAlphaTex->FileName.c_str(),
+            flareAlphaTex->Resource, flareAlphaTex->UploadHeap
+		);
+		ThrowIfFailed(hr);
+		mTextures[flareAlphaTex->Name] = std::move(flareAlphaTex);
     }
 
 
@@ -527,13 +538,15 @@ bool BoxApp::Initialize()
 	{
 		UINT objCount = (UINT)mOpaqueRenderItems.size();
         UINT matCount = (UINT)mMaterials.size();
+		UINT textureCount = mTextures.size();
+
         mMaterialCbvOffset = objCount*gNumFrameResources;
 		mPassCbvOffset = mMaterialCbvOffset + matCount*gNumFrameResources;
         mtextureSrvOffset = mPassCbvOffset + 1*gNumFrameResources;
 		D3D12_DESCRIPTOR_HEAP_DESC heapDesc;
 		heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 		// 描述符个数等于物体数量*Frame数量，每个Frame还有Pass和材质、1个纹理数据，所以额外加上
-		heapDesc.NumDescriptors = (objCount + 1 +matCount +1) * gNumFrameResources;
+		heapDesc.NumDescriptors = (objCount + 1 +matCount + textureCount) * gNumFrameResources;
 		// Shader可见，因为需要读取
 		heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 		heapDesc.NodeMask = 0;
@@ -618,24 +631,32 @@ bool BoxApp::Initialize()
 
 		}
 
-		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-		ID3D12Resource* texResource = mTextures["woodCrateTex"]->Resource.Get();
-		srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; //特殊用途
-		srvDesc.Format = texResource->GetDesc().Format;     //从纹理中读取格式
-		srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;                      // 2D纹理的格式
-		srvDesc.Texture2D.MostDetailedMip = 0;
-		srvDesc.Texture2D.MipLevels = texResource->GetDesc().MipLevels;
-		srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+        // 纹理
 
-        // 纹理这种srv资源和常量缓冲区要放到一个堆里(同一个commandlist只能绑定4个堆:CBV/SRV/UAV  RTV   DSV   Sampler)
-        for (int frameIndex = 0; frameIndex < gNumFrameResources; ++frameIndex)
-        {
-            D3D12_CPU_DESCRIPTOR_HANDLE srvHandle = mCbvHeap->GetCPUDescriptorHandleForHeapStart();
-            srvHandle.ptr +=(mtextureSrvOffset + frameIndex)*mCbvUavDescriptorSize;
-            md3dDevice->CreateShaderResourceView(
-                texResource, &srvDesc, srvHandle
-            ) ;
-        }
+		// 纹理这种srv资源和常量缓冲区要放到一个堆里(同一个commandlist只能绑定4个堆:CBV/SRV/UAV  RTV   DSV   Sampler)
+		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+		ID3D12Resource* texResource = nullptr;
+		srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; //特殊用途
+	
+
+		for (int frameIndex = 0; frameIndex < gNumFrameResources; ++frameIndex)
+		{
+            UINT offset = 0;
+			for (auto& e:mTextures)
+			{
+                texResource = e.second->Resource.Get();
+				srvDesc.Format = texResource->GetDesc().Format;     //从纹理中读取格式
+				srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;                      // 2D纹理的格式
+				srvDesc.Texture2D.MostDetailedMip = 0;
+				srvDesc.Texture2D.MipLevels = texResource->GetDesc().MipLevels;
+				srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+
+				D3D12_CPU_DESCRIPTOR_HANDLE cbHandle = mCbvHeap->GetCPUDescriptorHandleForHeapStart();
+				cbHandle.ptr += (mtextureSrvOffset + frameIndex * mTextures.size() + offset) * mCbvUavDescriptorSize;
+				md3dDevice->CreateShaderResourceView(texResource, &srvDesc, cbHandle);
+                offset++;
+			}
+		}
     }
     
     // 初始化RootSignature，把常量缓冲区绑定到GPU上供Shader读取.
@@ -683,7 +704,7 @@ bool BoxApp::Initialize()
 
     	// texture 
     	D3D12_DESCRIPTOR_RANGE texDescRange;
-    	texDescRange.NumDescriptors = 1;
+    	texDescRange.NumDescriptors = 2;
     	texDescRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     	texDescRange.RegisterSpace = 0;
     	texDescRange.BaseShaderRegister=0;
@@ -1167,7 +1188,7 @@ void BoxApp::Draw(const GameTimer& gt)
 
 			// 设置纹理
 			D3D12_GPU_DESCRIPTOR_HANDLE texHandle = mCbvHeap->GetGPUDescriptorHandleForHeapStart();
-            texHandle.ptr += (mtextureSrvOffset + mCurrentFrameIndex) * mCbvUavDescriptorSize;
+            texHandle.ptr += (mtextureSrvOffset + mCurrentFrameIndex*mTextures.size()) * mCbvUavDescriptorSize;
 
 			mCommandList->SetGraphicsRootDescriptorTable(3, texHandle);
 
