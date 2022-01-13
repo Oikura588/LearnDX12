@@ -1512,8 +1512,46 @@ void BoxApp::Draw(const GameTimer& gt)
 
 		auto objCB = mCurrentFrameResource->ObjectsCB->Resource();
 
-        // 最后一个是水，先渲染不透明物体
-        // 倒数第二个是Box(虽然总共就三个，但是懒得分层了)
+		// 渲染水
+		{
+
+
+			mCommandList->SetPipelineState(mPSOs["transparentPSO"].Get());
+			auto ri = mOpaqueRenderItems[mOpaqueRenderItems.size() - 1];
+			// 更新object常量
+			mCommandList->IASetVertexBuffers(0, 1, &ri->Geo->VertexBufferView());
+			mCommandList->IASetIndexBuffer(&ri->Geo->IndexBufferView());
+			mCommandList->IASetPrimitiveTopology(ri->PrimitiveTopology);
+			D3D12_GPU_VIRTUAL_ADDRESS cbAddress = mCurrentFrameResource->ObjectsCB->Resource()->GetGPUVirtualAddress();
+			cbAddress += (ri->ObjCBOffset) * objCBByteSize;
+			mCommandList->SetGraphicsRootConstantBufferView(0, cbAddress);
+			// 设置材质
+			D3D12_GPU_VIRTUAL_ADDRESS matAddress = mCurrentFrameResource->mMaterialCB->Resource()->GetGPUVirtualAddress();
+			matAddress += (ri->Mat->MatCBIndex) * matCBByteSize;
+			mCommandList->SetGraphicsRootConstantBufferView(1, matAddress);
+
+			//D3D12_GPU_VIRTUAL_ADDRESS texAddress;
+			//if (ri->Mat->DiffuseSrvHeapIndex == 0)
+			//{
+			//    texAddress = mTextures["grassTex"]->Resource->GetGPUVirtualAddress();
+			//}
+			//else if(ri->Mat->DiffuseSrvHeapIndex == 1)
+			//{
+			//    texAddress =mTextures["waterTex"]->Resource->GetGPUVirtualAddress();
+
+			//}
+			D3D12_GPU_DESCRIPTOR_HANDLE texAddress = mSrvHeap->GetGPUDescriptorHandleForHeapStart();
+			texAddress.ptr += (ri->Mat->DiffuseSrvHeapIndex) * mCbvUavDescriptorSize;
+
+			// 设置纹理
+
+			mCommandList->SetGraphicsRootDescriptorTable(3, texAddress);
+
+
+			mCommandList->DrawIndexedInstanced(ri->IndexCount, 1, ri->StartIndexLocation, ri->BaseVertexLocation, 0);
+		}
+
+        // 渲染山
         mCommandList->SetPipelineState(mPSOs["opaquePSO"].Get());
 		for (size_t i = 0; i < mOpaqueRenderItems.size()-2; ++i)
 		{
@@ -1593,44 +1631,7 @@ void BoxApp::Draw(const GameTimer& gt)
         }
 	
         
-        // 渲染最后的水
-        {
-
-        
-		mCommandList->SetPipelineState(mPSOs["transparentPSO"].Get());
-		auto ri = mOpaqueRenderItems[mOpaqueRenderItems.size() - 1];
-		// 更新object常量
-		mCommandList->IASetVertexBuffers(0, 1, &ri->Geo->VertexBufferView());
-		mCommandList->IASetIndexBuffer(&ri->Geo->IndexBufferView());
-		mCommandList->IASetPrimitiveTopology(ri->PrimitiveTopology);
-		D3D12_GPU_VIRTUAL_ADDRESS cbAddress = mCurrentFrameResource->ObjectsCB->Resource()->GetGPUVirtualAddress();
-		cbAddress += (ri->ObjCBOffset) * objCBByteSize;
-		mCommandList->SetGraphicsRootConstantBufferView(0, cbAddress);
-		// 设置材质
-		D3D12_GPU_VIRTUAL_ADDRESS matAddress = mCurrentFrameResource->mMaterialCB->Resource()->GetGPUVirtualAddress();
-		matAddress += (ri->Mat->MatCBIndex) * matCBByteSize;
-		mCommandList->SetGraphicsRootConstantBufferView(1, matAddress);
-
-		//D3D12_GPU_VIRTUAL_ADDRESS texAddress;
-		//if (ri->Mat->DiffuseSrvHeapIndex == 0)
-		//{
-		//    texAddress = mTextures["grassTex"]->Resource->GetGPUVirtualAddress();
-		//}
-		//else if(ri->Mat->DiffuseSrvHeapIndex == 1)
-		//{
-		//    texAddress =mTextures["waterTex"]->Resource->GetGPUVirtualAddress();
-
-		//}
-		D3D12_GPU_DESCRIPTOR_HANDLE texAddress = mSrvHeap->GetGPUDescriptorHandleForHeapStart();
-		texAddress.ptr += (ri->Mat->DiffuseSrvHeapIndex) * mCbvUavDescriptorSize;
-
-		// 设置纹理
-
-		mCommandList->SetGraphicsRootDescriptorTable(3, texAddress);
-
-
-		mCommandList->DrawIndexedInstanced(ri->IndexCount, 1, ri->StartIndexLocation, ri->BaseVertexLocation, 0);
-        }
+     
 	}
 
     // 绘制完成后改变资源状态.
