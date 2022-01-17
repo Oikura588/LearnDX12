@@ -18,6 +18,7 @@ enum class ERenderLayer :int
     Mirrors,
     Reflected,
     Transparent,
+    Shadow,
     Count
 };
 
@@ -208,6 +209,7 @@ private:
     XMFLOAT3 mSkullTranslation = {0.f,1.f,-5.0f};
 	RenderItem* mSkullRenderItem = nullptr;
     RenderItem* mReflectedSkullRenderItem = nullptr;
+	RenderItem* mShawdowSkullRenderItem = nullptr;
 };
 
 BoxApp::BoxApp(HINSTANCE hinstance)
@@ -332,12 +334,21 @@ bool BoxApp::Initialize()
 		skullMat->Roughness = 0.3f;
         skullMat->MatTransform = MathHelper::Identity4x4();
 
-
+        auto shadowMat = std::make_unique<Material>();
+        shadowMat->Name = "shadowMat";
+        shadowMat->MatCBIndex = 4;
+        shadowMat->DiffuseSrvHeapIndex = 3;
+        shadowMat->DiffuseAlbedo = XMFLOAT4(0.f,0.f,0.f,0.5f);
+        shadowMat->FresnelR0 = XMFLOAT3(0.01f,0.01f,0.01f);
+        shadowMat->Roughness = 0.0f;
+        shadowMat->NumFramesDirty  =gNumFrameResources;
 
 		mMaterials["bricks"] = std::move(brick);
 		mMaterials["checkertile"] = std::move(checkertile);
 		mMaterials["icemirror"] = std::move(icemirror);
 		mMaterials["skullMat"] = std::move(skullMat);
+		mMaterials["shadowMat"] = std::move(shadowMat);
+
     }
 	// Build Geometry.和渲染没什么关系了，就是创建buffer并保存起来，绘制的时候用
 	{
@@ -825,6 +836,14 @@ mCommandList->ResourceBarrier(
         mRenderItemsLayer[(int)ERenderLayer::Transparent].push_back(mirrorRenderItem.get());
 
 
+        // 阴影的renderitem
+        auto shadowSkullRenderitem = std::make_unique<RenderItem>();
+        *shadowSkullRenderitem = *skullRenderItem;
+        shadowSkullRenderitem->ObjCBOffset = 5;
+        shadowSkullRenderitem->Mat = mMaterials["shadowMat"].get();
+        mShawdowSkullRenderItem = shadowSkullRenderitem.get();
+        mRenderItemsLayer[(int)ERenderLayer::Shadow].push_back(mShawdowSkullRenderItem);
+
 
 
 	
@@ -833,6 +852,7 @@ mCommandList->ResourceBarrier(
         mAllRenderItems.push_back(std::move(skullRenderItem));
         mAllRenderItems.push_back(std::move(reflectedSkullRenderItem));
         mAllRenderItems.push_back(std::move(mirrorRenderItem));
+        mAllRenderItems.push_back(std::move(shadowSkullRenderitem));
 	} 
  
     // 初始化多个帧资源.需要给按照物体个数初始化常量缓冲区，所以需要事先知道物体个数.
@@ -1369,6 +1389,27 @@ mCommandList->ResourceBarrier(
 		ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
 			&pipelineStateDesc, IID_PPV_ARGS(&mPSOs["transparentPSO"])
 		));
+
+        // 绘制阴影材质的pso
+        //D3D12_DEPTH_STENCIL_DESC shadowDSS={};
+        //shadowDSS.DepthEnable = true;
+        //shadowDSS.Dep
+        pipelineStateDesc.BlendState.RenderTarget[0] = rtDesc;
+        pipelineStateDesc.BlendState.RenderTarget[0].BlendEnable = true;
+        pipelineStateDesc.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+        pipelineStateDesc.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+        pipelineStateDesc.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+        pipelineStateDesc.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+        pipelineStateDesc.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ZERO;
+        pipelineStateDesc.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        pipelineStateDesc.BlendState.RenderTarget[0].LogicOpEnable = false;
+        pipelineStateDesc.DepthStencilState = dsDesc;
+        pipelineStateDesc.DepthStencilState.StencilEnable = true;
+        pipelineStateDesc.DepthStencilState.FrontFace.StencilPassOp = D3D12_STENCIL_OP_INCR;
+        pipelineStateDesc.DepthStencilState.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_EQUAL;
+		ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
+			&pipelineStateDesc, IID_PPV_ARGS(&mPSOs["shadowPSO"])
+		));
     }
 
     
@@ -1453,6 +1494,8 @@ void BoxApp::Update(const GameTimer& gt)
         mReflectedSkullRenderItem->NumFramesDirty = gNumFrameResources;
 
     }
+
+  
 
 
     // 循环获取FrameResource
@@ -1563,6 +1606,16 @@ void BoxApp::Update(const GameTimer& gt)
 
         auto PassCB = mCurrentFrameResource->PassCB.get();
         currPassCB->CopyData(1,reflcetPassConstants);
+
+		// 更新阴影矩阵,需要知道光线方向
+		{
+			XMVECTOR shadowPlane = XMVectorSet(0.f, 1.f, 0.f, 0.f);    //xz平面
+			XMVECTOR toMainLight = -XMLoadFloat3(&passConstants.Lights[0].Direction);
+            XMMATRIX S = XMMatrixShadow(shadowPlane,toMainLight);
+            XMMATRIX shadowOffsetY = XMMatrixTranslation(0.F,0.001F,0.F);
+            XMStoreFloat4x4(&mShawdowSkullRenderItem->World,( XMLoadFloat4x4(&mSkullRenderItem->World)*S*shadowOffsetY));
+            mShawdowSkullRenderItem->NumFramesDirty = gNumFrameResources;
+		}
     }
     
     // // 更新Constant Buffer.
@@ -1751,6 +1804,33 @@ void BoxApp::Draw(const GameTimer& gt)
 			mCommandList->DrawIndexedInstanced(ri->IndexCount, 1, ri->StartIndexLocation, ri->BaseVertexLocation, 0);
 			//mCommandList->DrawIndexedInstanced(3,1,0,0,0);
 		}
+
+        // 绘制阴影层
+		  // 绘制镜面透明层
+		mCommandList->SetPipelineState(mPSOs["shadowPSO"].Get());
+        mCommandList->OMSetStencilRef(0);
+		for (size_t i = 0; i < mRenderItemsLayer[(int)ERenderLayer::Shadow].size(); ++i)
+		{
+			auto ri = mRenderItemsLayer[(int)ERenderLayer::Shadow][i];
+			mCommandList->IASetVertexBuffers(0, 1, &ri->Geo->VertexBufferView());
+			mCommandList->IASetIndexBuffer(&ri->Geo->IndexBufferView());
+			mCommandList->IASetPrimitiveTopology(ri->PrimitiveTopology);
+			D3D12_GPU_DESCRIPTOR_HANDLE cbvHandle = mCbvHeap->GetGPUDescriptorHandleForHeapStart();
+			cbvHandle.ptr += (ri->ObjCBOffset + mAllRenderItems.size() * mCurrentFrameIndex) * mCbvUavDescriptorSize;
+			mCommandList->SetGraphicsRootDescriptorTable(0, cbvHandle);
+			// 设置材质
+			D3D12_GPU_DESCRIPTOR_HANDLE matHandle = mCbvHeap->GetGPUDescriptorHandleForHeapStart();
+			matHandle.ptr += (mMaterialCbvOffset + mCurrentFrameIndex * mMaterials.size() + ri->Mat->MatCBIndex) * mCbvUavDescriptorSize;
+			mCommandList->SetGraphicsRootDescriptorTable(1, matHandle);
+
+			// 设置纹理
+			D3D12_GPU_DESCRIPTOR_HANDLE texHandle = mCbvHeap->GetGPUDescriptorHandleForHeapStart();
+			texHandle.ptr += (mSrvOffset + mCurrentFrameIndex * mTextures.size() + ri->Mat->DiffuseSrvHeapIndex) * mCbvUavDescriptorSize;
+			mCommandList->SetGraphicsRootDescriptorTable(3, texHandle);
+			mCommandList->DrawIndexedInstanced(ri->IndexCount, 1, ri->StartIndexLocation, ri->BaseVertexLocation, 0);
+			//mCommandList->DrawIndexedInstanced(3,1,0,0,0);
+		}
+
 
 	}
 
