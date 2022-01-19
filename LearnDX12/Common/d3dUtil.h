@@ -172,17 +172,6 @@ struct Texture
     Microsoft::WRL::ComPtr<ID3D12Resource> UploadHeap = nullptr;
 };
 
-// 纹理
-struct Texture
-{
-    // 便于查找测试
-    std::string Name;
-    std::wstring FileName;
-
-    Microsoft::WRL::ComPtr<ID3D12Resource> Resource = nullptr;
-    Microsoft::WRL::ComPtr<ID3D12Resource> UploadHeap = nullptr;
-};
-
 // 光源
 struct Light
 {

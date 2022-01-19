@@ -26,6 +26,11 @@ struct Vertex
     XMFLOAT3 Normal;
     XMFLOAT2 TexCoord;
 };
+struct TreeSpirteVertex
+{
+    XMFLOAT3 Pos;
+    XMFLOAT2 Size;
+};
 // 常量缓冲区.每个物体有自己的transform信息.
 struct ObjectConstants
 {
@@ -378,6 +383,7 @@ private:
     // MeshGeometry中包含了顶点、索引的buffer及view，方便管理几何体.
     std::unordered_map<std::string,std::unique_ptr<MeshGeometry>> mGeometries;
     std::vector<D3D12_INPUT_ELEMENT_DESC> mInputLayout;
+    std::vector<D3D12_INPUT_ELEMENT_DESC> mTreeInputLayout;
     // Shaders.
     std::unordered_map<std::string,ComPtr<ID3DBlob>> mShaders;
 
@@ -467,9 +473,17 @@ bool BoxApp::Initialize()
 
 		ThrowIfFailed(DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(), mCommandList.Get(), fenceTex->FileName.c_str(), fenceTex->Resource, fenceTex->UploadHeap));
 
+        // 树的纹理
+        auto treeTex = std::make_unique<Texture>();
+        treeTex->Name = "treeArrayTex";
+        treeTex->FileName = L"Textures\\treeArray2.dds";
+
+        ThrowIfFailed(DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(),mCommandList.Get(),treeTex->FileName.c_str(),treeTex->Resource,treeTex->UploadHeap));
+
         mTextures[grassTex->Name] = std::move(grassTex);
         mTextures[waterTex->Name] = std::move(waterTex);
         mTextures[fenceTex->Name] = std::move(fenceTex);
+        mTextures[treeTex->Name] = std::move(treeTex);
     }
     // 创建采样器堆
     {
@@ -506,6 +520,7 @@ bool BoxApp::Initialize()
         auto grassTex = mTextures["grassTex"]->Resource;
 		auto waterTex = mTextures["waterTex"]->Resource;
         auto fenceTex = mTextures["fenceTex"]->Resource;
+        auto treeTex  = mTextures["treeTex"]->Resource;
 		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
 		srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; //特殊用途
 		srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;                      // 2D纹理的格式
@@ -530,6 +545,16 @@ bool BoxApp::Initialize()
 		srvDesc.Format = fenceTex->GetDesc().Format;
 		srvDesc.Texture2D.MipLevels = fenceTex->GetDesc().MipLevels;
 		md3dDevice->CreateShaderResourceView(fenceTex.Get(), &srvDesc, srvHandle);
+
+        // 第四个（其实可以改成数组自动处理的，不过unordermap的顺序不确定，update里更新的时候指定index的话可能会错）
+		srvHandle.ptr += mCbvUavDescriptorSize;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+		srvDesc.Format = treeTex->GetDesc().Format;
+		srvDesc.Texture2DArray.MipLevels = treeTex->GetDesc().MipLevels;
+        srvDesc.Texture2DArray.MostDetailedMip = 0;
+        srvDesc.Texture2DArray.FirstArraySlice = 0;
+        srvDesc.Texture2DArray.ArraySize = treeTex->GetDesc().DepthOrArraySize;
+		md3dDevice->CreateShaderResourceView(treeTex.Get(), &srvDesc, srvHandle);
 
     }
     // 创建材质
@@ -559,10 +584,147 @@ bool BoxApp::Initialize()
 		wirefence->Roughness = 0.25f;
         wirefence->NumFramesDirty = gNumFrameResources;
 
+        auto treeSprites = std::make_unique<Material>();
+        treeSprites->MatCBIndex = 3;
+        treeSprites->DiffuseSrvHeapIndex = 3;
+        treeSprites->DiffuseAlbedo = XMFLOAT4(1.0F,1.F,1.F,1.F);
+        treeSprites->FresnelR0 = XMFLOAT3(0.01f,0.01f,0.01f);
+        treeSprites->Roughness = 0.125f;
+        treeSprites->NumFramesDirty = gNumFrameResources;
+
         mMaterials["grass"] = std::move(grass);
         mMaterials["water"] = std::move(water);
         mMaterials["wirefence"] = std::move(wirefence);
+        mMaterials["treeSprites"] = std::move(treeSprites);
         
+    }
+
+    // Build tree geometry
+    {
+        static const int treeCount = 16;
+        std::array<TreeSpirteVertex,16> vertices;
+        for (UINT i = 0; i < treeCount; ++i)
+        {
+            float x = MathHelper::RandF(-45.0F,45.0F);
+            float z = MathHelper::RandF(-45.0f,45.0f);
+            float y = GetHillsHeight(x,z);
+
+            // Move tree above land height
+            y+=8.0f;
+            vertices[i].Pos = XMFLOAT3(x,y,z);
+            vertices[i].Size = XMFLOAT2(20.0f,20.0f);
+
+        }
+        std::array<std::uint16_t, 16> indices = 
+        {
+            0,1,2,3,4,5,6,7,
+            8,9,10,11,12,13,14,15
+        };
+
+        SubmeshGeometry submesh;
+        submesh.IndexCount = (UINT)indices.size();
+        submesh.StartIndexLocation = 0;
+        submesh.BaseVertexLocation = 0;
+
+        const UINT vbByteSize = sizeof(TreeSpirteVertex)*(UINT)vertices.size();
+        const UINT ibByteSize = sizeof(std::int16_t)*(UINT)indices.size();
+
+        auto geo = std::make_unique<MeshGeometry>();
+        geo->VertexBufferByteSize = vbByteSize;
+        geo->IndexBufferByteSize = ibByteSize;
+        geo->DrawArgs["points"] = submesh;
+
+        // 创建buffer
+        {
+            D3D12_HEAP_PROPERTIES bufferDesc = {};
+            bufferDesc.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+            bufferDesc.CreationNodeMask = 1;
+            bufferDesc.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+            bufferDesc.Type = D3D12_HEAP_TYPE_DEFAULT;
+            bufferDesc.VisibleNodeMask = 1;
+
+            D3D12_RESOURCE_DESC resourceDesc = {};
+            resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+            resourceDesc.Alignment = 0;
+            resourceDesc.DepthOrArraySize = 1;
+            resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+            resourceDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+            resourceDesc.Format = DXGI_FORMAT_UNKNOWN;
+            resourceDesc.Height = 1;
+            resourceDesc.Width = vbByteSize;
+            resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+            resourceDesc.MipLevels = 1;
+            resourceDesc.SampleDesc.Count = 1;
+            resourceDesc.SampleDesc.Quality = 0;
+
+            D3D12_RESOURCE_DESC ibDesc = resourceDesc;
+            ibDesc.Width = ibByteSize;
+
+            md3dDevice->CreateCommittedResource(
+                &bufferDesc,
+                D3D12_HEAP_FLAG_NONE,
+                &resourceDesc,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                nullptr,
+                IID_PPV_ARGS(geo->VertexBufferGPU.GetAddressOf())
+            );
+			md3dDevice->CreateCommittedResource(
+				&bufferDesc,
+				D3D12_HEAP_FLAG_NONE,
+				&ibDesc,
+				D3D12_RESOURCE_STATE_COPY_DEST,
+				nullptr,
+				IID_PPV_ARGS(geo->IndexBufferGPU.GetAddressOf())
+			);
+
+            // 创建中介
+            bufferDesc.Type = D3D12_HEAP_TYPE_UPLOAD;
+			md3dDevice->CreateCommittedResource(
+				&bufferDesc,
+				D3D12_HEAP_FLAG_NONE,
+				&resourceDesc,
+				D3D12_RESOURCE_STATE_GENERIC_READ,
+				nullptr,
+				IID_PPV_ARGS(geo->VertexBufferUploader.GetAddressOf())
+			);
+			md3dDevice->CreateCommittedResource(
+				&bufferDesc,
+				D3D12_HEAP_FLAG_NONE,
+				&ibDesc,
+				D3D12_RESOURCE_STATE_GENERIC_READ,
+				nullptr,
+				IID_PPV_ARGS(geo->IndexBufferUploader.GetAddressOf())
+			);
+
+
+            // 把data复制到中介
+            BYTE* pData = nullptr;
+            geo->VertexBufferUploader->Map(0,nullptr,reinterpret_cast<void**>(&pData));
+            memcpy(pData,vertices.data(),vbByteSize);
+            geo->VertexBufferUploader->Unmap(0,nullptr);
+
+            // 把中介复制到默认
+            mCommandList->CopyBufferRegion(geo->VertexBufferGPU.Get(),0,geo->VertexBufferUploader.Get(),0,vbByteSize);
+
+            // 改变默认的状态
+            mCommandList->ResourceBarrier(1,&CD3DX12_RESOURCE_BARRIER::Transition(geo->VertexBufferGPU.Get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_COMMON));
+
+			// 把data复制到中介
+			pData = nullptr;
+			geo->IndexBufferUploader->Map(0, nullptr, reinterpret_cast<void**>(&pData));
+			memcpy(pData, indices.data(), ibByteSize);
+			geo->IndexBufferUploader->Unmap(0, nullptr);
+
+			// 把中介复制到默认
+			mCommandList->CopyBufferRegion(geo->IndexBufferGPU.Get(), 0, geo->IndexBufferUploader.Get(), 0, ibByteSize);
+
+			// 改变默认的状态
+			mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(geo->IndexBufferGPU.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON));
+
+
+        }
+
+        mGeometries["treeSpritesGeo"] = std::move(geo);
     }
 	// Build Geometry.和渲染没什么关系了，就是创建buffer并保存起来，绘制的时候用
 	{
@@ -871,7 +1033,7 @@ bool BoxApp::Initialize()
 
 		auto boxRenderItem = std::make_unique<RenderItem>();
 		XMStoreFloat4x4(&boxRenderItem->World, XMMatrixScaling(2.F, 2.F, 2.F)* XMMatrixTranslation(0., 0.5f, 0.0f));
-		boxRenderItem->ObjCBOffset = 0;
+		boxRenderItem->ObjCBOffset = 1;
 		boxRenderItem->Geo = mGeometries["landGeo"].get();
 		boxRenderItem->PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 		boxRenderItem->BaseVertexLocation = boxRenderItem->Geo->DrawArgs["box"].BaseVertexLocation;
@@ -884,7 +1046,7 @@ bool BoxApp::Initialize()
 
         auto waveRenderItem = std::make_unique<RenderItem>();
         waveRenderItem->World = MathHelper::Identity4x4();
-        waveRenderItem->ObjCBOffset = 1;
+        waveRenderItem->ObjCBOffset = 2;
         waveRenderItem->Geo = mGeometries["waveGeo"].get();
         waveRenderItem->PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
         waveRenderItem->BaseVertexLocation = waveRenderItem->Geo->DrawArgs["grid"].BaseVertexLocation;
@@ -896,6 +1058,17 @@ bool BoxApp::Initialize()
 
         mAllRenderItems.push_back(std::move(waveRenderItem));
 
+        auto treeSpritesRenderItem = std::make_unique<RenderItem>();
+        treeSpritesRenderItem->World = MathHelper::Identity4x4();
+        treeSpritesRenderItem->ObjCBOffset = 3;
+        treeSpritesRenderItem->Mat = mMaterials["treeSprites"].get();
+        treeSpritesRenderItem->Geo = mGeometries["treeSpritesGeo"].get();
+        treeSpritesRenderItem->PrimitiveTopology = D3D_PRIMITIVE_TOPOLOGY_POINTLIST;
+        treeSpritesRenderItem->IndexCount = treeSpritesRenderItem->Geo->DrawArgs["points"].IndexCount;
+        treeSpritesRenderItem->StartIndexLocation = treeSpritesRenderItem->Geo->DrawArgs["points"].StartIndexLocation;
+        treeSpritesRenderItem->BaseVertexLocation = treeSpritesRenderItem->Geo->DrawArgs["points"].BaseVertexLocation;
+
+		mAllRenderItems.push_back(std::move(treeSpritesRenderItem));
 		// 非透明，添加到对应Pass中
 		for (auto& e : mAllRenderItems)
 		{
@@ -1107,6 +1280,10 @@ bool BoxApp::Initialize()
             {"NORMAL",0,DXGI_FORMAT_R32G32B32_FLOAT,0,12,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
             {"TEXCOORD",0,DXGI_FORMAT_R32G32_FLOAT,0,24,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0}
         };
+        mTreeInputLayout = {
+		    {"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0,0,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0,},
+			{"SIZE",0,DXGI_FORMAT_R32G32B32_FLOAT,0,12,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0,},
+        };
     }
 
     // PSO
@@ -1231,6 +1408,7 @@ bool BoxApp::Initialize()
 			&pipelineStateDesc, IID_PPV_ARGS(&mPSOs["alphatestPSO"])
 		));
 
+        // 创建GS的PSO
 
         
     }
