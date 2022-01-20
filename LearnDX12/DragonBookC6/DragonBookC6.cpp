@@ -1243,7 +1243,6 @@ bool BoxApp::Initialize()
 		}
 		ThrowIfFailed(hr);
 
-      
 
         // 编译Alphatest ps
         // 这里后面必须有两个NULL,NULL，否则会编译错误0xff.
@@ -1268,6 +1267,72 @@ bool BoxApp::Initialize()
             OutputDebugStringA((char*)errorCode->GetBufferPointer());
         }
         ThrowIfFailed(hr);
+
+
+		// 编译广告牌的shader
+        // VS
+        errorCode = nullptr;
+        hr = S_OK;
+        filename = L"Shaders\\tree.hlsl";
+
+        hr = D3DCompileFromFile(
+            filename.c_str(),
+            nullptr,
+            D3D_COMPILE_STANDARD_FILE_INCLUDE,
+            "VS",
+            "vs_5_0",
+            compileFlags,
+            0,
+            &mShaders["treeSpriteVS"],
+            &errorCode
+        );
+        if (errorCode != nullptr)
+        {
+			OutputDebugStringA((char*)errorCode->GetBufferPointer());
+        }
+        ThrowIfFailed(hr);
+        // PS
+		errorCode = nullptr;
+		hr = S_OK;
+		filename = L"Shaders\\tree.hlsl";
+
+		hr = D3DCompileFromFile(
+			filename.c_str(),
+            alphaTestDefines,
+			D3D_COMPILE_STANDARD_FILE_INCLUDE,
+			"PS",
+			"ps_5_0",
+			compileFlags,
+			0,
+			&mShaders["treeSpritePS"],
+			&errorCode
+		);
+		if (errorCode != nullptr)
+		{
+			OutputDebugStringA((char*)errorCode->GetBufferPointer());
+		}
+		ThrowIfFailed(hr);
+        // GS
+		errorCode = nullptr;
+		hr = S_OK;
+		filename = L"Shaders\\tree.hlsl";
+
+		hr = D3DCompileFromFile(
+			filename.c_str(),
+			nullptr,
+			D3D_COMPILE_STANDARD_FILE_INCLUDE,
+			"GS",
+			"gs_5_0",
+			compileFlags,
+			0,
+			&mShaders["treeSpriteGS"],
+			&errorCode
+		);
+		if (errorCode != nullptr)
+		{
+			OutputDebugStringA((char*)errorCode->GetBufferPointer());
+		}
+		ThrowIfFailed(hr);
 
 		
 
