@@ -5,6 +5,7 @@
 #include "../Common/UploadBuffer.h"
 #include "../Common/GeometryGenerator.h"
 #include "../Common/DDSTextureLoader.h"
+#include "../Common/LoadM3D.h"
 #include <DirectXColors.h>
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
@@ -35,6 +36,36 @@ struct MaterialConstants
     float Roughness;
     DirectX::XMFLOAT4X4 MaterialTransform;
 };
+// 蒙皮网格缓冲区
+struct SkinnedConstants
+{
+    DirectX::XMFLOAT4X4 BoneTransform[96];
+};
+
+// 一个蒙皮网格实例
+struct SkinnedModelInstance
+{
+    SkinnedData* SkinnedInfo = nullptr;
+    // 存储给定时间点的最终变化
+    std::vector<DirectX::XMFLOAT4X4> FinalTransforms;
+    // 当前动画名称 
+    std::string ClipName;
+    // 当前时间点
+    float TimePos = 0.f;
+
+    void UpdateSkinnedAnimation(float dt)
+    {
+        TimePos+=dt;
+        // Loop
+        if (TimePos > SkinnedInfo->GetClipEndTime(ClipName))
+        {
+            TimePos = 0.f;
+        }
+
+        SkinnedInfo->GetFinalTransforms(ClipName,TimePos,FinalTransforms);
+    }
+
+};
 
 // 存储绘制一个物体需要的数据的结构，随着不同的程序有所差别.
 struct RenderItem
@@ -59,6 +90,10 @@ struct RenderItem
 
     // 材质
     Material* Mat = nullptr;
+
+    // 动画相关
+    UINT SkinnedCBIndex = -1;
+    SkinnedModelInstance* SkinnedModelInst = nullptr;
 };
 
 // 每次渲染时会更新的缓冲区。
@@ -90,7 +125,7 @@ struct PassConstants
 class FrameResource
 {
 public:
-    FrameResource(ID3D12Device* device,UINT passCount,UINT objectCount,UINT MaterialCount)
+    FrameResource(ID3D12Device* device,UINT passCount,UINT objectCount,UINT MaterialCount,UINT skinnedCount)
     {
         device->CreateCommandAllocator(
             D3D12_COMMAND_LIST_TYPE_DIRECT,
@@ -99,6 +134,8 @@ public:
         ObjectsCB = std::make_unique<UploadBuffer<ObjectConstants>>(device,objectCount,true);
         PassCB = std::make_unique<UploadBuffer<PassConstants>>(device,passCount,true);
         MaterialCB = std::make_unique<UploadBuffer<MaterialConstants>>(device,MaterialCount,true);
+        SkinnedCB = std::make_unique<UploadBuffer<SkinnedConstants>>(device, skinnedCount,true);
+        
     }
     FrameResource(const FrameResource& rhs) = delete;
     FrameResource& operator=(const FrameResource& rhs) = delete;
@@ -110,94 +147,11 @@ public:
     std::unique_ptr<UploadBuffer<ObjectConstants>> ObjectsCB = nullptr;
     std::unique_ptr<UploadBuffer<PassConstants>> PassCB = nullptr;
     std::unique_ptr<UploadBuffer<MaterialConstants>> MaterialCB = nullptr;
+    std::unique_ptr<UploadBuffer<SkinnedConstants>> SkinnedCB = nullptr;
 
     // 每帧需要有自己的fence，来判断GPU与CPU的帧之间的同步.
     UINT64 Fence = 0;
 };
-
-
-// Keyframe
-struct Keyframe
-{
-    Keyframe(){};
-    ~Keyframe(){};
-
-    float TimePos;
-    XMFLOAT3 Translation;
-    XMFLOAT3 Scale;
-    XMFLOAT4 RotationQuat;
-};
-
-// 动画
-struct BoneAnimation
-{
-    // 返回第一个关键帧的起始点.
-    float GetStartTime() const{
-        if (Keyframes.size() > 0)
-        {
-            return Keyframes.front().TimePos;
-        }
-        return 0.f;
-    };
-    // 返回最后一个关键帧的结束点.
-    float GetEndTime() const{
-		if (Keyframes.size() > 0)
-		{
-			return Keyframes.back().TimePos;
-		}
-		return 0.f;
-    } 
-
-    // t：当前时间,M:计算结果
-    void Interpolate(float t,XMFLOAT4X4& M) const;
-    std::vector<Keyframe> Keyframes;
-};
-
-void BoneAnimation::Interpolate(float t, XMFLOAT4X4& M) const
-{
-    if (t <= Keyframes.front().TimePos)
-    {
-        XMVECTOR S = XMLoadFloat3(&Keyframes.front().Scale);
-        XMVECTOR P = XMLoadFloat3(&Keyframes.front().Translation);
-        XMVECTOR Q = XMLoadFloat4(&Keyframes.front().RotationQuat);
-
-        XMVECTOR Zero = XMVectorSet(0.F,0.F,0.F,1.F);
-        XMStoreFloat4x4(&M,XMMatrixAffineTransformation(S,Zero,Q,P));
-    }
-    else if (t >= Keyframes.back().TimePos)
-    {
-		XMVECTOR S = XMLoadFloat3(&Keyframes.back().Scale);
-		XMVECTOR P = XMLoadFloat3(&Keyframes.back().Translation);
-		XMVECTOR Q = XMLoadFloat4(&Keyframes.back().RotationQuat);
-
-		XMVECTOR Zero = XMVectorSet(0.F, 0.F, 0.F, 1.F);
-		XMStoreFloat4x4(&M, XMMatrixAffineTransformation(S, Zero, Q, P));
-    }
-    // 位于两个关键帧之间，进行插值
-    else
-    {
-        for (UINT i = 0; i < Keyframes.size() - 1; ++i)
-        {
-            if (t >= Keyframes[i].TimePos && t <= Keyframes[i + 1].TimePos)
-            {
-                float lerpPercent = (t-Keyframes[i].TimePos)/(Keyframes[i+1].TimePos-Keyframes[i].TimePos);
-                XMVECTOR s0 = XMLoadFloat3(&Keyframes[i].Scale);
-				XMVECTOR s1 = XMLoadFloat3(&Keyframes[i+1].Scale);
-				XMVECTOR t0 = XMLoadFloat3(&Keyframes[i].Translation);
-				XMVECTOR t1 = XMLoadFloat3(&Keyframes[i + 1].Translation);
-				XMVECTOR q0 = XMLoadFloat4(&Keyframes[i].RotationQuat);
-				XMVECTOR q1 = XMLoadFloat4(&Keyframes[i + 1].RotationQuat);
-
-                XMVECTOR S = XMVectorLerp(s0,s1,lerpPercent);
-                XMVECTOR P = XMVectorLerp(t0,t1,lerpPercent);
-                XMVECTOR Q = XMQuaternionSlerp(q0,q1,lerpPercent);
-
-				XMVECTOR Zero = XMVectorSet(0.F, 0.F, 0.F, 1.F);
-				XMStoreFloat4x4(&M, XMMatrixAffineTransformation(S, Zero, Q, P));
-            }
-        }
-    }
-}
 
 class BoxApp : public D3DApp
 {
@@ -224,6 +178,7 @@ private:
 	UINT mPassCbvOffset;
     UINT mMaterialCbvOffset;
 	UINT mSrvOffset;
+    UINT mSkinOffset;
 
     // 存储所有渲染项.
     std::vector<std::unique_ptr<RenderItem>> mAllRenderItems;
@@ -277,6 +232,21 @@ private:
     float mAnimTimePos = 0.f;
     BoneAnimation mSkullAnimation;
 
+    // 所有动画片段.
+    std::unordered_map<std::string,AnimationClip> mAnimations;
+
+    // 蒙皮顶点的输入布局
+	std::vector<D3D12_INPUT_ELEMENT_DESC> mSkinnedVertexInputLayout;
+
+    // 当前动画实例(仅有一个)
+    std::unique_ptr<SkinnedModelInstance> mSkinnedModelInst = nullptr;
+    std::string mSkinnedModelFileName = "Models\\soldier.m3d";
+
+	SkinnedData mSkinnedInfo;
+	std::vector<M3DLoader::Subset> mSkinnedSubsets;
+	std::vector<M3DLoader::M3dMaterial> mSkinnedMats;
+	std::vector<std::string> mSkinnedTextureNames;
+
 };
 
 BoxApp::BoxApp(HINSTANCE hinstance)
@@ -299,36 +269,6 @@ bool BoxApp::Initialize()
     ThrowIfFailed( mCommandList->Reset(mDirectCmdListAlloc.Get(),nullptr));
     // 初始化.
 
-    // 初始化纹理
-    {
-        auto brickTex = std::make_unique<Texture>();
-        brickTex->Name = "bricksTex";
-        brickTex->FileName = L"Textures\\bricks3.dds";
-        ThrowIfFailed( DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(),mCommandList.Get(),brickTex->FileName.c_str(),brickTex->Resource,brickTex->UploadHeap));
-
-        auto stoneTex = std::make_unique<Texture>();
-        stoneTex->Name = "stoneTex";
-        stoneTex->FileName = L"Textures\\stone.dds";
-		ThrowIfFailed(DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(), mCommandList.Get(), stoneTex->FileName.c_str(), stoneTex->Resource, stoneTex->UploadHeap));
-
-		auto tileTex = std::make_unique<Texture>();
-		tileTex->Name = "tileTex";
-		tileTex->FileName = L"Textures\\tile.dds";
-		ThrowIfFailed(DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(), mCommandList.Get(), tileTex->FileName.c_str(), tileTex->Resource, tileTex->UploadHeap));
-
-		auto skullTex = std::make_unique<Texture>();
-		skullTex->Name = "skullTex";
-		skullTex->FileName = L"Textures\\white1x1.dds";
-		ThrowIfFailed(DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(), mCommandList.Get(), skullTex->FileName.c_str(), skullTex->Resource, skullTex->UploadHeap));
-
-
-
-        mTextures[brickTex->Name] = std::move(brickTex);
-		mTextures[stoneTex->Name] = std::move(stoneTex);
-		mTextures[tileTex->Name] = std::move(tileTex);
-		mTextures[skullTex->Name] = std::move(skullTex);
-
-    }
 
     // 初始化采样器堆
     {
@@ -359,57 +299,6 @@ bool BoxApp::Initialize()
         md3dDevice->CreateSampler(&samplerDesc,mSamplerHeap->GetCPUDescriptorHandleForHeapStart());
     }
 
-    // Build material.
-    {
-		// 创建材质
-		auto bricks0 = std::make_unique<Material>();
-		bricks0->Name = "bricks0";
-		bricks0->MatCBIndex = 0;
-		bricks0->NumFramesDirty = gNumFrameResources;
-		bricks0->DiffuseAlbedo = XMFLOAT4(Colors::ForestGreen);
-		bricks0->FresnelR0 = XMFLOAT3(0.02f, 0.02f, 0.02f);
-		bricks0->Roughness = 0.1f;
-        bricks0->DiffuseSrvHeapIndex = 0;           // texture 0
-		bricks0->MatTransform = MathHelper::Identity4x4();          
-
-		auto stone0 = std::make_unique<Material>();
-		stone0->Name = "stone0";
-		stone0->MatCBIndex = 1;
-        stone0->NumFramesDirty = gNumFrameResources;
-		stone0->DiffuseAlbedo = XMFLOAT4(Colors::LightSteelBlue);
-		stone0->FresnelR0 = XMFLOAT3(0.05f, 0.05f, 0.05f);
-		stone0->Roughness = 0.3f;
-        stone0->DiffuseSrvHeapIndex = 1;            // texture 1
-        stone0->MatTransform = MathHelper::Identity4x4();
-
-
-		auto tile0 = std::make_unique<Material>();
-		tile0->Name = "tile0";
-		tile0->MatCBIndex = 2;
-        tile0->NumFramesDirty = gNumFrameResources;
-		tile0->DiffuseAlbedo = XMFLOAT4(Colors::LightGray);
-		tile0->FresnelR0 = XMFLOAT3(0.02f, 0.02f, 0.02f);
-		tile0->Roughness = 0.2f;
-        tile0->DiffuseSrvHeapIndex = 2;             // texture 2
-        tile0->MatTransform = MathHelper::Identity4x4();
-
-
-		auto skullMat = std::make_unique<Material>();
-		skullMat->Name = "skullMat";
-		skullMat->MatCBIndex = 3;
-        skullMat->NumFramesDirty = gNumFrameResources;
-		skullMat->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
-		skullMat->FresnelR0 = XMFLOAT3(0.05f, 0.05f, 0.05);
-		skullMat->Roughness = 0.3f;
-        skullMat->DiffuseSrvHeapIndex = 3;
-        skullMat->MatTransform = MathHelper::Identity4x4();
-
-
-		mMaterials["bricks0"] = std::move(bricks0);
-		mMaterials["stone0"] = std::move(stone0);
-		mMaterials["tile0"] = std::move(tile0);
-		mMaterials["skullMat"] = std::move(skullMat);
-    }
 	// Build Geometry.和渲染没什么关系了，就是创建buffer并保存起来，绘制的时候用
 	{
 		// 使用工具函数创建顶点和索引的数组
@@ -460,6 +349,7 @@ bool BoxApp::Initialize()
         meshSubmesh.IndexCount = mesh.Indices32.size();
         meshSubmesh.StartIndexLocation = meshIndexOffset;
 
+
 		// 把所有的顶点、索引放到一个缓冲区内
 		auto totalVertexCount = box.Vertices.size() + grid.Vertices.size() + sphere.Vertices.size() + cylinder.Vertices.size() + mesh.Vertices.size(); 
 
@@ -506,6 +396,7 @@ bool BoxApp::Initialize()
 			vertices[k].TexC = mesh.Vertices[i].TexC;
 
 		}
+		
 
 		// 索引的缓冲区.
 		std::vector<std::uint16_t> indices;
@@ -678,6 +569,301 @@ bool BoxApp::Initialize()
         mGeometries["shapeGeo"]=std::move(mBoxGeo);
 
 	}
+    // 创建骨骼动画的顶点缓冲区
+    {
+
+	    // 模型
+	    std::vector<M3DLoader::SkinnedVertex> vertices;
+	    std::vector<std::uint16_t> indices;
+
+	    M3DLoader m3dLoader;
+	    std::vector<XMFLOAT4X4> boneOffsets;
+	    std::vector<int> boneIndexToParentIndex;
+	    std::unordered_map<std::string, AnimationClip> animations;
+
+	    m3dLoader.LoadM3d(mSkinnedModelFileName, vertices, indices, mSkinnedSubsets, mSkinnedMats,mSkinnedInfo);
+
+	    mSkinnedModelInst = std::make_unique<SkinnedModelInstance>();
+	    mSkinnedModelInst->SkinnedInfo = &mSkinnedInfo;
+	    mSkinnedModelInst->FinalTransforms.resize(mSkinnedInfo.BoneCount());
+	    mSkinnedModelInst->ClipName = "Take1";
+	    mSkinnedModelInst->TimePos = 0.0f;
+
+		const UINT vbByteSize = (UINT)vertices.size() * sizeof(M3DLoader::SkinnedVertex);
+		const UINT ibByteSize = (UINT)indices.size() * sizeof(std::uint16_t);
+		auto geo = std::make_unique<MeshGeometry>();
+		geo->Name = mSkinnedModelFileName;
+
+        geo->VertexBufferByteSize = vbByteSize;
+        geo->IndexBufferByteSize = ibByteSize;
+        geo->VertexByteStride = sizeof(M3DLoader::SkinnedVertex);
+        geo->IndexFormat = DXGI_FORMAT_R16_UINT;
+
+        for (UINT i = 0; i < (UINT)mSkinnedSubsets.size(); ++i)
+        {
+			SubmeshGeometry submesh;
+			std::string name = "sm_" + std::to_string(i);
+
+			submesh.IndexCount = (UINT)mSkinnedSubsets[i].FaceCount * 3;
+			submesh.StartIndexLocation = mSkinnedSubsets[i].FaceStart * 3;
+			submesh.BaseVertexLocation = 0;
+
+			geo->DrawArgs[name] = submesh;
+        }
+
+        // 创建顶点缓冲区.
+
+		// 创建默认缓冲区资源.
+		D3D12_HEAP_PROPERTIES defaultBufferProperties;
+		defaultBufferProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
+		defaultBufferProperties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+		defaultBufferProperties.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+		defaultBufferProperties.CreationNodeMask = 1;
+		defaultBufferProperties.VisibleNodeMask = 1;
+		D3D12_RESOURCE_DESC vbDesc;
+		vbDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+		vbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		vbDesc.Alignment = 0;
+		vbDesc.Format = DXGI_FORMAT_UNKNOWN;
+		vbDesc.Height = 1;
+		vbDesc.Width = vbByteSize;
+		vbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+		vbDesc.MipLevels = 1;
+		vbDesc.SampleDesc.Count = 1;
+		vbDesc.SampleDesc.Quality = 0;
+		vbDesc.DepthOrArraySize = 1;
+		D3D12_RESOURCE_DESC ibDesc = vbDesc;
+		ibDesc.Width = ibByteSize;
+
+		// VB
+		md3dDevice->CreateCommittedResource(
+			&defaultBufferProperties,
+			D3D12_HEAP_FLAG_NONE,
+			&vbDesc,
+			D3D12_RESOURCE_STATE_COMMON,
+			nullptr,
+			IID_PPV_ARGS(geo->VertexBufferGPU.GetAddressOf())
+		);
+		// IB
+		md3dDevice->CreateCommittedResource(
+			&defaultBufferProperties,
+			D3D12_HEAP_FLAG_NONE,
+			&ibDesc,
+			D3D12_RESOURCE_STATE_COMMON,
+			nullptr,
+			IID_PPV_ARGS(geo->IndexBufferGPU.GetAddressOf())
+		);
+		// 创建作为中介的上传缓冲区.
+		defaultBufferProperties.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+		md3dDevice->CreateCommittedResource(
+			&defaultBufferProperties,
+			D3D12_HEAP_FLAG_NONE,
+			&vbDesc,
+			D3D12_RESOURCE_STATE_GENERIC_READ,
+			nullptr,
+			IID_PPV_ARGS(geo->VertexBufferUploader.GetAddressOf())
+		);
+		md3dDevice->CreateCommittedResource(
+			&defaultBufferProperties,
+			D3D12_HEAP_FLAG_NONE,
+			&ibDesc,
+			D3D12_RESOURCE_STATE_GENERIC_READ,
+			nullptr,
+			IID_PPV_ARGS(geo->IndexBufferUploader.GetAddressOf())
+		);
+
+
+		// 把默认的buffer改成写入状态来复制.
+		mCommandList->ResourceBarrier(
+			1,
+			&CD3DX12_RESOURCE_BARRIER::Transition(
+                geo->VertexBufferGPU.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST
+			)
+		);
+		mCommandList->ResourceBarrier(
+			1,
+			&CD3DX12_RESOURCE_BARRIER::Transition(
+                geo->IndexBufferGPU.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST
+			)
+		);
+
+
+
+		// 把数据拷贝到上传缓冲区.使用Subresource.
+		// 涉及到的调用:
+		// ID3D12Device::GetCopyableFootprints.
+		// UploaderBuffer::Map
+		// memcpy()?
+		// 思考，这里为什么不直接memcpy整个vertexbuffer，而是用subresource来处理.
+
+		BYTE* pData;
+
+		HRESULT hr = geo->VertexBufferUploader->Map(0, nullptr, reinterpret_cast<void**>(&pData));
+		ThrowIfFailed(hr);
+		UINT64 SrcOffset = 0;
+		UINT64 NumBytes = 0;
+
+		{
+			memcpy(pData, vertices.data(), vbByteSize);
+		}
+		// Unmap.
+        geo->VertexBufferUploader->Unmap(0, nullptr);
+		pData = nullptr;
+		// copy buffer.
+		mCommandList->CopyBufferRegion(
+            geo->VertexBufferGPU.Get(),
+			0,
+            geo->VertexBufferUploader.Get(),
+			SrcOffset,
+			vbByteSize
+		);
+
+		// 同样的流程，复制index buffer.
+		hr = geo->IndexBufferUploader->Map(0, nullptr, reinterpret_cast<void**>(&pData));
+		ThrowIfFailed(hr);
+		{
+			memcpy(pData, indices.data(), ibByteSize);
+		}
+        geo->IndexBufferUploader->Unmap(0, nullptr);
+		pData = nullptr;
+		// copubuffer
+		mCommandList->CopyBufferRegion(
+            geo->IndexBufferGPU.Get(),
+			0,
+            geo->IndexBufferUploader.Get(),
+			0,
+			ibByteSize
+
+		);
+
+
+		// Copy结束后，改变buffer状态
+		mCommandList->ResourceBarrier(
+			1,
+			&CD3DX12_RESOURCE_BARRIER::Transition(
+                geo->VertexBufferGPU.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ
+			)
+		);
+		mCommandList->ResourceBarrier(
+			1,
+			&CD3DX12_RESOURCE_BARRIER::Transition(
+                geo->IndexBufferGPU.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ
+			)
+		);
+
+        mGeometries[geo->Name] =std::move( geo);
+
+    }
+	// 初始化纹理
+	{
+	    auto brickTex = std::make_unique<Texture>();
+	    brickTex->Name = "bricksTex";
+	    brickTex->FileName = L"Textures\\bricks3.dds";
+	    ThrowIfFailed(DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(), mCommandList.Get(), brickTex->FileName.c_str(), brickTex->Resource, brickTex->UploadHeap));
+
+	    auto stoneTex = std::make_unique<Texture>();
+	    stoneTex->Name = "stoneTex";
+	    stoneTex->FileName = L"Textures\\stone.dds";
+	    ThrowIfFailed(DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(), mCommandList.Get(), stoneTex->FileName.c_str(), stoneTex->Resource, stoneTex->UploadHeap));
+
+	    auto tileTex = std::make_unique<Texture>();
+	    tileTex->Name = "tileTex";
+	    tileTex->FileName = L"Textures\\tile.dds";
+	    ThrowIfFailed(DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(), mCommandList.Get(), tileTex->FileName.c_str(), tileTex->Resource, tileTex->UploadHeap));
+
+	    auto skullTex = std::make_unique<Texture>();
+	    skullTex->Name = "skullTex";
+	    skullTex->FileName = L"Textures\\white1x1.dds";
+	    ThrowIfFailed(DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(), mCommandList.Get(), skullTex->FileName.c_str(), skullTex->Resource, skullTex->UploadHeap));
+
+		for (UINT i = 0; i < mSkinnedMats.size(); ++i)
+		{
+			std::string diffuseName = mSkinnedMats[i].DiffuseMapName;
+			std::wstring diffuseFileName = L"Textures\\" + AnsiToWString(diffuseName);
+			diffuseName = diffuseName.substr(0, diffuseName.find_last_of("."));
+			mSkinnedTextureNames.push_back(diffuseName);
+
+			auto Tex = std::make_unique<Texture>();
+			Tex->Name = diffuseName;
+			Tex->FileName = diffuseFileName;
+			ThrowIfFailed(DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(), mCommandList.Get(), Tex->FileName.c_str(), Tex->Resource, Tex->UploadHeap));
+			mTextures[Tex->Name] = std::move(Tex);
+		}
+
+	    mTextures[brickTex->Name] = std::move(brickTex);
+	    mTextures[stoneTex->Name] = std::move(stoneTex);
+	    mTextures[tileTex->Name] = std::move(tileTex);
+	    mTextures[skullTex->Name] = std::move(skullTex);
+
+	}
+	// Build material.
+	{
+	    // 创建材质
+	    auto bricks0 = std::make_unique<Material>();
+	    bricks0->Name = "bricks0";
+	    bricks0->MatCBIndex = 0;
+	    bricks0->NumFramesDirty = gNumFrameResources;
+	    bricks0->DiffuseAlbedo = XMFLOAT4(Colors::ForestGreen);
+	    bricks0->FresnelR0 = XMFLOAT3(0.02f, 0.02f, 0.02f);
+	    bricks0->Roughness = 0.1f;
+	    bricks0->DiffuseSrvHeapIndex = 0;           // texture 0
+	    bricks0->MatTransform = MathHelper::Identity4x4();
+
+	    auto stone0 = std::make_unique<Material>();
+	    stone0->Name = "stone0";
+	    stone0->MatCBIndex = 1;
+	    stone0->NumFramesDirty = gNumFrameResources;
+	    stone0->DiffuseAlbedo = XMFLOAT4(Colors::LightSteelBlue);
+	    stone0->FresnelR0 = XMFLOAT3(0.05f, 0.05f, 0.05f);
+	    stone0->Roughness = 0.3f;
+	    stone0->DiffuseSrvHeapIndex = 1;            // texture 1
+	    stone0->MatTransform = MathHelper::Identity4x4();
+
+
+	    auto tile0 = std::make_unique<Material>();
+	    tile0->Name = "tile0";
+	    tile0->MatCBIndex = 2;
+	    tile0->NumFramesDirty = gNumFrameResources;
+	    tile0->DiffuseAlbedo = XMFLOAT4(Colors::LightGray);
+	    tile0->FresnelR0 = XMFLOAT3(0.02f, 0.02f, 0.02f);
+	    tile0->Roughness = 0.2f;
+	    tile0->DiffuseSrvHeapIndex = 2;             // texture 2
+	    tile0->MatTransform = MathHelper::Identity4x4();
+
+
+	    auto skullMat = std::make_unique<Material>();
+	    skullMat->Name = "skullMat";
+	    skullMat->MatCBIndex = 3;
+	    skullMat->NumFramesDirty = gNumFrameResources;
+	    skullMat->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
+	    skullMat->FresnelR0 = XMFLOAT3(0.05f, 0.05f, 0.05);
+	    skullMat->Roughness = 0.3f;
+	    skullMat->DiffuseSrvHeapIndex = 3;
+	    skullMat->MatTransform = MathHelper::Identity4x4();
+
+
+	    mMaterials["bricks0"] = std::move(bricks0);
+	    mMaterials["stone0"] = std::move(stone0);
+	    mMaterials["tile0"] = std::move(tile0);
+	    mMaterials["skullMat"] = std::move(skullMat);
+
+        // 创建骨骼模型的材质
+        UINT matCBIndex = 4;
+        UINT srvHeapIndex = 4;
+        for (UINT i = 0; i < mSkinnedMats.size(); ++i)
+        {
+            auto mat = std::make_unique<Material>();
+            mat->Name = mSkinnedMats[i].Name;
+            mat->MatCBIndex = matCBIndex++;
+            mat->DiffuseSrvHeapIndex = srvHeapIndex++;
+            mat->DiffuseAlbedo = mSkinnedMats[i].DiffuseAlbedo;
+            mat->FresnelR0 = mSkinnedMats[i].FresnelR0;
+            mat->Roughness = mSkinnedMats[i].Roughness;
+
+            mMaterials[mat->Name] = std::move(mat);
+        }
+	}
 
 	// 构建几何体后就可以Build渲染项了，渲染项可以理解为是几何体的实例化，每个渲染项是场景中的一个物体，比如可能有多个圆台形组成的物体
 	{
@@ -777,6 +963,35 @@ bool BoxApp::Initialize()
 			mAllRenderItems.push_back(std::move(rightSphereRenderItem));
 		}
 
+
+        // 构建骨骼模型
+        // 渲染项按材质区分
+        for (UINT i = 0; i < mSkinnedMats.size(); ++i)
+        {
+            std::string submeshName = "sm_"+std::to_string(i);
+            auto renderItem = std::make_unique<RenderItem>();
+
+			// Reflect to change coordinate system from the RHS the data was exported out as.
+			XMMATRIX modelScale = XMMatrixScaling(0.05f, 0.05f, -0.05f);
+			XMMATRIX modelRot = XMMatrixRotationY(MathHelper::Pi);
+			XMMATRIX modelOffset = XMMatrixTranslation(0.0f, 0.0f, -5.0f);
+			XMStoreFloat4x4(&renderItem->World, modelScale * modelRot * modelOffset);
+
+            renderItem->ObjCBOffset = objCBOffset++;
+            renderItem->Mat = mMaterials[mSkinnedMats[i].Name].get();
+            renderItem->Geo = mGeometries[mSkinnedModelFileName].get();
+            renderItem->PrimitiveTopology = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+            renderItem->IndexCount = renderItem->Geo->DrawArgs[submeshName].IndexCount;
+            renderItem->StartIndexLocation = renderItem->Geo->DrawArgs[submeshName].StartIndexLocation;
+            renderItem->BaseVertexLocation = renderItem->Geo->DrawArgs[submeshName].BaseVertexLocation;
+
+            // 所有渲染项绑定一个骨骼实例.
+            renderItem->SkinnedCBIndex = 0;
+            renderItem->SkinnedModelInst = mSkinnedModelInst.get();
+			//mAllRenderItems.push_back(std::move(renderItem));
+
+        }
+
 		// 非透明，添加到对应Pass中
 		for (auto& e : mAllRenderItems)
 		{
@@ -789,7 +1004,7 @@ bool BoxApp::Initialize()
         for(int i=0;i<gNumFrameResources;++i)
         {
             mFrameResources.push_back(
-                std::make_unique<FrameResource>(md3dDevice.Get(),1,mAllRenderItems.size(),mMaterials.size())
+                std::make_unique<FrameResource>(md3dDevice.Get(),1,mAllRenderItems.size(),mMaterials.size(),1)
             );
         }
     }
@@ -801,10 +1016,12 @@ bool BoxApp::Initialize()
         mMaterialCbvOffset = objCount*gNumFrameResources;
 		mPassCbvOffset = mMaterialCbvOffset + matCount*gNumFrameResources;
         mSrvOffset = mPassCbvOffset + 1*gNumFrameResources;
+        mSkinOffset = mSrvOffset +textureCount*gNumFrameResources;
 		D3D12_DESCRIPTOR_HEAP_DESC heapDesc;
 		heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 		// 描述符个数等于物体数量*Frame数量，每个Frame还有Pass和材质数据，所以额外加上
-		heapDesc.NumDescriptors = (objCount + 1 +matCount + textureCount) * gNumFrameResources;
+        // 补充1个模型的constant.
+		heapDesc.NumDescriptors = (objCount + 1 +matCount + textureCount+1) * gNumFrameResources;
 		// Shader可见，因为需要读取
 		heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 		heapDesc.NodeMask = 0;
@@ -934,8 +1151,38 @@ bool BoxApp::Initialize()
 			md3dDevice->CreateShaderResourceView(
                 meshResource.Get(), &shaderResourceDesc, cbHandle
 			);
+
+			for (UINT i = 0; i < (UINT)mSkinnedTextureNames.size(); ++i)
+			{
+				auto texResource = mTextures[mSkinnedTextureNames[i]]->Resource;
+
+				cbHandle.ptr += mCbvUavDescriptorSize;
+                shaderResourceDesc.Format = texResource->GetDesc().Format;
+				shaderResourceDesc.Texture2D.MipLevels = texResource->GetDesc().MipLevels;
+				md3dDevice->CreateShaderResourceView(
+                    texResource.Get(), &shaderResourceDesc, cbHandle
+				);
+			}
            
+           // model tex
         }
+        // Skin constant.
+		for (int frameIndex = 0; frameIndex < gNumFrameResources; ++frameIndex)
+		{
+			auto SkinnedCB = mFrameResources[frameIndex]->SkinnedCB->Resource();
+			UINT skinCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(PassConstants));
+			D3D12_GPU_VIRTUAL_ADDRESS passAddress = SkinnedCB->GetGPUVirtualAddress();
+
+			D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
+			cbvDesc.BufferLocation = passAddress;
+			cbvDesc.SizeInBytes = skinCBByteSize;
+
+			D3D12_CPU_DESCRIPTOR_HANDLE cbHandle = mCbvHeap->GetCPUDescriptorHandleForHeapStart();
+			cbHandle.ptr += (mSkinOffset + frameIndex) * mCbvUavDescriptorSize;
+
+			md3dDevice->CreateConstantBufferView(&cbvDesc, cbHandle);
+
+		}
     }
     
     // 初始化RootSignature，把常量缓冲区绑定到GPU上供Shader读取.
@@ -1005,11 +1252,23 @@ bool BoxApp::Initialize()
 		samplerDescTable.pDescriptorRanges = &samplerDescRange;
 		samplerDescTable.NumDescriptorRanges = 1;
 
+        // Model
+		D3D12_DESCRIPTOR_RANGE modelDescRange;
+		modelDescRange.NumDescriptors = 1;
+		modelDescRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+		// 思考,这里RegisterSpace意义还不清楚，下面那个对应着色器中的b0、b1之类的.
+		modelDescRange.RegisterSpace = 0;
+		modelDescRange.BaseShaderRegister = 3;
+		modelDescRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+		D3D12_ROOT_DESCRIPTOR_TABLE modelDescTable;
+		modelDescTable.pDescriptorRanges = &modelDescRange;
+		modelDescTable.NumDescriptorRanges = 1;
 
         
 
         
-        D3D12_ROOT_PARAMETER slotRootParameter[5];
+        D3D12_ROOT_PARAMETER slotRootParameter[6];
         // object 
         slotRootParameter[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         slotRootParameter[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
@@ -1035,6 +1294,10 @@ bool BoxApp::Initialize()
         slotRootParameter[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
         slotRootParameter[4].DescriptorTable = samplerDescTable;
         
+		// pass
+		slotRootParameter[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+		slotRootParameter[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+		slotRootParameter[5].DescriptorTable = modelDescTable;
         
         // 创建RootSignature.要使用Blob
         // d3d12规定，必须将根签名的描述布局进行序列化，才可以传入CreateRootSignature方法.
@@ -1042,7 +1305,7 @@ bool BoxApp::Initialize()
         
         D3D12_ROOT_SIGNATURE_DESC rootSignatureDesc;
         rootSignatureDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-        rootSignatureDesc.NumParameters = 5;
+        rootSignatureDesc.NumParameters = 6;
         rootSignatureDesc.pParameters = slotRootParameter;
         rootSignatureDesc.pStaticSamplers = nullptr;
         rootSignatureDesc.NumStaticSamplers = 0;
@@ -1083,6 +1346,9 @@ bool BoxApp::Initialize()
         HRESULT hr = S_OK;
         ComPtr<ID3DBlob> errorCode = nullptr;
         
+		// 角色模型的shader，包含宏.
+        D3D_SHADER_MACRO skinMesh[] = {"SKINNED","1",NULL,NULL};
+
         // 编译vs
         filename = L"Shaders\\color.hlsl";
         entrypoint = "VS";
@@ -1106,7 +1372,24 @@ bool BoxApp::Initialize()
             OutputDebugStringA((char*)errorCode->GetBufferPointer());
         }
         ThrowIfFailed(hr);
-
+        hr =S_OK;
+        errorCode = nullptr;
+		hr = D3DCompileFromFile(
+			filename.c_str(),
+			skinMesh,
+			D3D_COMPILE_STANDARD_FILE_INCLUDE,
+			entrypoint.c_str(),
+			target.c_str(),
+			compileFlags,
+			0,
+			&mShaders["skinnedVS"],
+			&errorCode
+		);
+		if (errorCode != nullptr)
+		{
+			OutputDebugStringA((char*)errorCode->GetBufferPointer());
+		}
+		ThrowIfFailed(hr);
         errorCode = nullptr;
         hr = S_OK;
         // 编译ps.
@@ -1137,6 +1420,14 @@ bool BoxApp::Initialize()
             {"COLOR",0,DXGI_FORMAT_R32G32B32A32_FLOAT,0,12,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
 			{"NORMAL",0,DXGI_FORMAT_R32G32B32_FLOAT,0,28,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
 			{"TEXCOORD",0,DXGI_FORMAT_R32G32_FLOAT,0,40,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0}
+        };
+        mSkinnedVertexInputLayout = {
+			{"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0,0,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0,},
+			{"COLOR",0,DXGI_FORMAT_R32G32B32A32_FLOAT,0,12,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
+			{"NORMAL",0,DXGI_FORMAT_R32G32B32_FLOAT,0,28,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
+			{"TEXCOORD",0,DXGI_FORMAT_R32G32_FLOAT,0,40,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
+            {"BONEWEIGHTS",0,DXGI_FORMAT_R32G32B32_FLOAT,0,48,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
+			{"BONEINDICES",0,DXGI_FORMAT_R8G8B8A8_UINT,0,60,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0}
         };
     }
 
@@ -1228,8 +1519,18 @@ bool BoxApp::Initialize()
 		ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
 			&pipelineStateDesc, IID_PPV_ARGS(&mPSOs["wireframePSO"])
 		));
-        
-        
+
+        // 创建骨骼模型pso
+		D3D12_GRAPHICS_PIPELINE_STATE_DESC characterDesc = pipelineStateDesc;
+		characterDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+		characterDesc.VS =
+		{
+			reinterpret_cast<BYTE*>(mShaders["skinnedVS"]->GetBufferPointer()),mShaders["skinnedVS"]->GetBufferSize()
+		};
+		ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
+			&pipelineStateDesc, IID_PPV_ARGS(&mPSOs["modelPSO"])
+		));
+
     }
 
     
@@ -1240,50 +1541,6 @@ bool BoxApp::Initialize()
 
     // 等待初始化完成.
     FlushCommandQueue();
-
-
-    //初始化动画数据
-    {
-        // 定义关键帧
-        XMVECTOR q0 = XMQuaternionRotationAxis(
-            XMVectorSet(0.f,1.f,0.f,0.f),XMConvertToRadians(30.0f)
-        );
-		XMVECTOR q1 = XMQuaternionRotationAxis(
-			XMVectorSet(1.f, 1.f, 2.f, 0.f), XMConvertToRadians(45.0f)
-		);  
-        XMVECTOR q2 = XMQuaternionRotationAxis(
-			XMVectorSet(0.f, 1.f, 0.f, 0.f), XMConvertToRadians(-30.0f)
-		);  
-        XMVECTOR q3 = XMQuaternionRotationAxis(
-			XMVectorSet(1.f, 1.f, 0.f, 0.f), XMConvertToRadians(70.0f)
-		);
-
-        mSkullAnimation.Keyframes.resize(5);
-        mSkullAnimation.Keyframes[0].TimePos = 0.f;
-        mSkullAnimation.Keyframes[0].Translation = XMFLOAT3(-7.0F,0.0f,0.0f);
-        mSkullAnimation.Keyframes[0].Scale = XMFLOAT3(0.25f,0.25f,0.25f);
-        XMStoreFloat4(&mSkullAnimation.Keyframes[0].RotationQuat,q0);
-
-		mSkullAnimation.Keyframes[1].TimePos = 2.f;
-		mSkullAnimation.Keyframes[1].Translation = XMFLOAT3(0.F, 2.0f, 10.0f);
-		mSkullAnimation.Keyframes[1].Scale = XMFLOAT3(0.25f, 0.25f, 0.25f);
-		XMStoreFloat4(&mSkullAnimation.Keyframes[1].RotationQuat, q1);
-
-		mSkullAnimation.Keyframes[2].TimePos = 4.f;
-		mSkullAnimation.Keyframes[2].Translation = XMFLOAT3(7.0F, 0.0f, 0.0f);
-		mSkullAnimation.Keyframes[2].Scale = XMFLOAT3(1.25f, 1.25f, 1.25f);
-		XMStoreFloat4(&mSkullAnimation.Keyframes[2].RotationQuat, q2);
-
-		mSkullAnimation.Keyframes[3].TimePos = 6.f;
-		mSkullAnimation.Keyframes[3].Translation = XMFLOAT3(0.F, 2.f, -10.0f);
-		mSkullAnimation.Keyframes[3].Scale = XMFLOAT3(1.f, 1.25f, 1.25f);
-		XMStoreFloat4(&mSkullAnimation.Keyframes[3].RotationQuat, q3);
-
-		mSkullAnimation.Keyframes[4].TimePos = 8.f;
-		mSkullAnimation.Keyframes[4].Translation = XMFLOAT3(-7.0F, 0.0f, 0.0f);
-		mSkullAnimation.Keyframes[4].Scale = XMFLOAT3(0.25f, 0.25f, 0.25f);
-		XMStoreFloat4(&mSkullAnimation.Keyframes[4].RotationQuat, q0);
-    }
 
     return true;
 }
@@ -1326,17 +1583,7 @@ void BoxApp::Update(const GameTimer& gt)
 		XMMATRIX view = XMMatrixLookAtLH(pos, target, up);
 		XMStoreFloat4x4(&mView, view);
     }
-    // 更新动画
-    {
-        mAnimTimePos +=gt.DeltaTime();
-        if (mAnimTimePos >= mSkullAnimation.GetEndTime())
-        {
-            mAnimTimePos = 0.f;
-        }
-        mSkullAnimation.Interpolate(mAnimTimePos,mSkullWorld);
-        mSkullRenderItem->World = mSkullWorld;
-        mSkullRenderItem->NumFramesDirty = gNumFrameResources;
-    }
+  
 
 
     // 循环获取FrameResource
@@ -1431,6 +1678,15 @@ void BoxApp::Update(const GameTimer& gt)
 	
         currPassCB->CopyData(0,passConstants);
     }
+
+    // 更新动画的CB
+    {
+		/*auto currentAnimCB = mCurrentFrameResource->SkinnedCB.get();
+        SkinnedConstants skinnedConstants;
+        mSkinnedModelInst->UpdateSkinnedAnimation(gt.DeltaTime());
+        std::copy(mSkinnedModelInst->FinalTransforms.begin(),mSkinnedModelInst->FinalTransforms.end(),&skinnedConstants.BoneTransform[0]);
+        currentAnimCB->CopyData(0,skinnedConstants);*/
+    }
     
     // // 更新Constant Buffer.
     // float x = mRadius*sinf(mPhi)*cosf(mTheta);
@@ -1488,57 +1744,75 @@ void BoxApp::Draw(const GameTimer& gt)
     // 指定渲染视图
     mCommandList->OMSetRenderTargets(1,&CurrentBackBufferDescriptor(),true,&DepthStencilDescriptor());
 
+ //   
+ //   mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
+	//// 设置采样器
+	//// 描述符相关.用来更新采样器
+	//ID3D12DescriptorHeap* samplerHeaps[] = { mSamplerHeap.Get() };
+	//mCommandList->SetDescriptorHeaps(_countof(samplerHeaps), samplerHeaps);
+	//mCommandList->SetGraphicsRootDescriptorTable(4, mSamplerHeap->GetGPUDescriptorHandleForHeapStart());
 
-    mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
-	// 设置采样器
-	// 描述符相关.用来更新采样器
-	ID3D12DescriptorHeap* samplerHeaps[] = { mSamplerHeap.Get() };
-	mCommandList->SetDescriptorHeaps(_countof(samplerHeaps), samplerHeaps);
-	mCommandList->SetGraphicsRootDescriptorTable(4, mSamplerHeap->GetGPUDescriptorHandleForHeapStart());
+	//// 描述符相关.用来更新常量缓冲区
+	//ID3D12DescriptorHeap* descHeaps[] = { mCbvHeap.Get() };
+	//mCommandList->SetDescriptorHeaps(_countof(descHeaps), descHeaps);
 
-	// 描述符相关.用来更新常量缓冲区
-	ID3D12DescriptorHeap* descHeaps[] = { mCbvHeap.Get() };
-	mCommandList->SetDescriptorHeaps(_countof(descHeaps), descHeaps);
+ //   int passCbvIndex = mPassCbvOffset + mCurrentFrameIndex;
+ //   auto passCbvHandle = mCbvHeap->GetGPUDescriptorHandleForHeapStart();
+ //   passCbvHandle.ptr +=passCbvIndex*mCbvUavDescriptorSize;
+ //   mCommandList->SetGraphicsRootDescriptorTable(2,passCbvHandle);
 
-    int passCbvIndex = mPassCbvOffset + mCurrentFrameIndex;
-    auto passCbvHandle = mCbvHeap->GetGPUDescriptorHandleForHeapStart();
-    passCbvHandle.ptr +=passCbvIndex*mCbvUavDescriptorSize;
-    mCommandList->SetGraphicsRootDescriptorTable(2,passCbvHandle);
+ //   // 绘制一个物体需要绑定两个buffer、设置图元类型、设置常量缓冲区等，把这些绘制一个物体需要的数据整合起来，可以作为RenderItem.
+	//// 绘制物体
+	//{
+	//	UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
+	//	UINT matCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(MaterialConstants));
+	//	UINT skinCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(SkinnedConstants));
 
-    // 绘制一个物体需要绑定两个buffer、设置图元类型、设置常量缓冲区等，把这些绘制一个物体需要的数据整合起来，可以作为RenderItem.
-	// 绘制物体
-	{
-		UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
-		UINT matCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(MaterialConstants));
+	//	auto objCB = mCurrentFrameResource->ObjectsCB->Resource();
 
-		auto objCB = mCurrentFrameResource->ObjectsCB->Resource();
+	//	for (size_t i = 0; i < mOpaqueRenderItems.size(); ++i)
+	//	{
 
-		for (size_t i = 0; i < mOpaqueRenderItems.size(); ++i)
-		{
-			auto ri = mOpaqueRenderItems[i];
-			mCommandList->IASetVertexBuffers(0,1,&ri->Geo->VertexBufferView());
-			mCommandList->IASetIndexBuffer(&ri->Geo->IndexBufferView());
-			mCommandList->IASetPrimitiveTopology(ri->PrimitiveTopology);
-			D3D12_GPU_DESCRIPTOR_HANDLE cbvHandle =  mCbvHeap->GetGPUDescriptorHandleForHeapStart();
-			cbvHandle.ptr+= (ri->ObjCBOffset+mOpaqueRenderItems.size()*mCurrentFrameIndex)*mCbvUavDescriptorSize;
-			mCommandList->SetGraphicsRootDescriptorTable(0, cbvHandle);
-            // 设置材质
-            D3D12_GPU_DESCRIPTOR_HANDLE matHandle= mCbvHeap->GetGPUDescriptorHandleForHeapStart();
-            matHandle.ptr += (mMaterialCbvOffset + mCurrentFrameIndex * mMaterials.size() + ri->Mat->MatCBIndex) * mCbvUavDescriptorSize;
-			mCommandList->SetGraphicsRootDescriptorTable(1, matHandle);
+	//		auto ri = mOpaqueRenderItems[i];
+	//		mCommandList->IASetVertexBuffers(0,1,&ri->Geo->VertexBufferView());
+	//		mCommandList->IASetIndexBuffer(&ri->Geo->IndexBufferView());
+	//		mCommandList->IASetPrimitiveTopology(ri->PrimitiveTopology);
+	//		D3D12_GPU_DESCRIPTOR_HANDLE cbvHandle =  mCbvHeap->GetGPUDescriptorHandleForHeapStart();
+	//		cbvHandle.ptr+= (ri->ObjCBOffset+mOpaqueRenderItems.size()*mCurrentFrameIndex)*mCbvUavDescriptorSize;
+	//		mCommandList->SetGraphicsRootDescriptorTable(0, cbvHandle);
+ //           // 设置材质
+	//	 /*   D3D12_GPU_DESCRIPTOR_HANDLE matHandle= mCbvHeap->GetGPUDescriptorHandleForHeapStart();
+	//		matHandle.ptr += (mMaterialCbvOffset + mCurrentFrameIndex * mMaterials.size() + ri->Mat->MatCBIndex) * mCbvUavDescriptorSize;
+	//		mCommandList->SetGraphicsRootDescriptorTable(1, matHandle);*/
 
-            // 设置纹理
-            D3D12_GPU_DESCRIPTOR_HANDLE texHandle = mCbvHeap->GetGPUDescriptorHandleForHeapStart();
-            texHandle.ptr +=(mSrvOffset + mCurrentFrameIndex*mTextures.size() + ri->Mat->DiffuseSrvHeapIndex) *mCbvUavDescriptorSize;
-            mCommandList->SetGraphicsRootDescriptorTable(3,texHandle);
+ //           // 设置纹理
+ //       /*    D3D12_GPU_DESCRIPTOR_HANDLE texHandle = mCbvHeap->GetGPUDescriptorHandleForHeapStart();
+ //           texHandle.ptr +=(mSrvOffset + mCurrentFrameIndex*mTextures.size() + ri->Mat->DiffuseSrvHeapIndex) *mCbvUavDescriptorSize;
+ //           mCommandList->SetGraphicsRootDescriptorTable(3,texHandle);*/
 
+ //           // 设置模型
+	//		D3D12_GPU_DESCRIPTOR_HANDLE skinHandle = mCbvHeap->GetGPUDescriptorHandleForHeapStart();
+	//		/*if (ri->SkinnedModelInst != nullptr)
+	//		{
+	//			mCommandList->SetPipelineState(mPSOs["modelPSO"].Get());
 
-			mCommandList->DrawIndexedInstanced(ri->IndexCount,1,ri->StartIndexLocation,ri->BaseVertexLocation,0);
-            //mCommandList->DrawIndexedInstanced(3,1,0,0,0);
-		}
+	//			skinHandle.ptr += (mSkinOffset + mCurrentFrameIndex + ri->SkinnedCBIndex) * mCbvUavDescriptorSize;
+	//			mCommandList->SetGraphicsRootDescriptorTable(5, skinHandle);
+	//		}
+	//		else*/
+ //           {
+	//			/*	mCommandList->SetPipelineState(mPSOs["defaultPSO"].Get());
 
-	}
+	//				mCommandList->SetGraphicsRootDescriptorTable(5, skinHandle);*/
+ //           }
 
+	//		mCommandList->DrawIndexedInstanced(ri->IndexCount,1,ri->StartIndexLocation,ri->BaseVertexLocation,0);
+ //           //mCommandList->DrawIndexedInstanced(3,1,0,0,0);
+	//	}
+
+	//}
+
+ //   
     // 绘制完成后改变资源状态.
     mCommandList->ResourceBarrier(
         1,&CD3DX12_RESOURCE_BARRIER::Transition(

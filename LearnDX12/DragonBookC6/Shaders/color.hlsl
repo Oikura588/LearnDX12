@@ -54,6 +54,12 @@ cbuffer cbPass : register(b2)
     float4 gAmbientLight;
     Light gLights[MaxLights];
 }
+// 骨骼信息
+cbuffer cbSkinned : register(b3)
+{
+    // 每个角色最多由96个骨骼构成
+    float4x4 gBoneTransform[96];
+};
 
 struct VertexIn
 {
@@ -61,6 +67,10 @@ struct VertexIn
   float4 Color : COLOR;
   float3 NormalL: NORMAL;
     float2 TexC : TEXCOORD;
+#ifdef SKINNED
+    float3 BoneWeights : BONEWEIGHTS;
+    uint4 BoneIndices  : BONEINDICES;
+#endif
 };
 
 struct VertexOut
@@ -77,6 +87,25 @@ SamplerState gsamPointWrap : register(s0);
 
 VertexOut VS(VertexIn vin)
 {
+#ifdef SKINNED
+    float weights[4] = {0.f,0.f,0.f,0.f};
+    weights[0] = vin.BoneWeights.x;
+    weights[1] = vin.BoneWeights.y;
+    weights[2] = vin.BoneWeights.z;
+    weights[3] = 1.f - weights[0] -weights[1]-weights[2];
+    float3 posL = float3(0.f,0.f,0.f);
+    float3 normalL = float3(0.f,0.f,0.f);
+    for(int i=0;i<4;++i)
+    {
+        posL+=weights[i]*mul(float4(vin.PosL,1.0f),gBoneTransform[vin.BoneIndices[i]]).xyz;
+        // 假设法线不包含非等比变化
+        normalL+=weights[i]*mul(vin.NormalL,(float3x3)gBoneTransform[vin.BoneIndices[i]]);
+    }
+    vin.PosL = posL;
+    vin.NormalL = normalL;
+#endif
+    
+    
   VertexOut vout;
 	float4 PosW = mul(float4(vin.PosL,1.0f),gWorld);
   // Transform to homogeneous clip space.
