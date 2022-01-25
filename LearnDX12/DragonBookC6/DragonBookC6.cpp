@@ -224,9 +224,18 @@ bool BoxApp::Initialize()
 		tileTex->FileName = L"Textures\\tile.dds";
 		ThrowIfFailed(DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(), mCommandList.Get(), tileTex->FileName.c_str(), tileTex->Resource, tileTex->UploadHeap));
 
+		auto skullTex = std::make_unique<Texture>();
+		skullTex->Name = "skullTex";
+		skullTex->FileName = L"Textures\\white1x1.dds";
+		ThrowIfFailed(DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(), mCommandList.Get(), skullTex->FileName.c_str(), skullTex->Resource, skullTex->UploadHeap));
+
+
+
         mTextures[brickTex->Name] = std::move(brickTex);
 		mTextures[stoneTex->Name] = std::move(stoneTex);
 		mTextures[tileTex->Name] = std::move(tileTex);
+		mTextures[skullTex->Name] = std::move(skullTex);
+
     }
 
     // 初始化采样器堆
@@ -300,6 +309,7 @@ bool BoxApp::Initialize()
 		skullMat->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
 		skullMat->FresnelR0 = XMFLOAT3(0.05f, 0.05f, 0.05);
 		skullMat->Roughness = 0.3f;
+        skullMat->DiffuseSrvHeapIndex = 3;
         skullMat->MatTransform = MathHelper::Identity4x4();
 
 
@@ -802,6 +812,7 @@ bool BoxApp::Initialize()
             auto texResource = mTextures["bricksTex"]->Resource;
 			auto stoneResource = mTextures["stoneTex"]->Resource;
 			auto tileResource = mTextures["tileTex"]->Resource;
+			auto meshResource = mTextures["skullTex"]->Resource;
 
             shaderResourceDesc.Format = texResource->GetDesc().Format;
             shaderResourceDesc.Texture2D.MipLevels = texResource->GetDesc().MipLevels;
@@ -818,12 +829,18 @@ bool BoxApp::Initialize()
 			);
 
             // 第三个纹理
-			 // 第二个纹理
 			cbHandle.ptr += mCbvUavDescriptorSize;
 			shaderResourceDesc.Format = tileResource->GetDesc().Format;
 			shaderResourceDesc.Texture2D.MipLevels = tileResource->GetDesc().MipLevels;
 			md3dDevice->CreateShaderResourceView(
                 tileResource.Get(), &shaderResourceDesc, cbHandle
+			);
+			// 第四个纹理
+			cbHandle.ptr += mCbvUavDescriptorSize;
+			shaderResourceDesc.Format = meshResource->GetDesc().Format;
+			shaderResourceDesc.Texture2D.MipLevels = meshResource->GetDesc().MipLevels;
+			md3dDevice->CreateShaderResourceView(
+                meshResource.Get(), &shaderResourceDesc, cbHandle
 			);
            
         }
