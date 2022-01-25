@@ -115,6 +115,90 @@ public:
     UINT64 Fence = 0;
 };
 
+
+// Keyframe
+struct Keyframe
+{
+    Keyframe(){};
+    ~Keyframe(){};
+
+    float TimePos;
+    XMFLOAT3 Translation;
+    XMFLOAT3 Scale;
+    XMFLOAT4 RotationQuat;
+};
+
+// 动画
+struct BoneAnimation
+{
+    // 返回第一个关键帧的起始点.
+    float GetStartTime() const{
+        if (Keyframes.size() > 0)
+        {
+            return Keyframes.front().TimePos;
+        }
+        return 0.f;
+    };
+    // 返回最后一个关键帧的结束点.
+    float GetEndTime() const{
+		if (Keyframes.size() > 0)
+		{
+			return Keyframes.back().TimePos;
+		}
+		return 0.f;
+    } 
+
+    // t：当前时间,M:计算结果
+    void Interpolate(float t,XMFLOAT4X4& M) const;
+    std::vector<Keyframe> Keyframes;
+};
+
+void BoneAnimation::Interpolate(float t, XMFLOAT4X4& M) const
+{
+    if (t <= Keyframes.front().TimePos)
+    {
+        XMVECTOR S = XMLoadFloat3(&Keyframes.front().Scale);
+        XMVECTOR P = XMLoadFloat3(&Keyframes.front().Translation);
+        XMVECTOR Q = XMLoadFloat4(&Keyframes.front().RotationQuat);
+
+        XMVECTOR Zero = XMVectorSet(0.F,0.F,0.F,1.F);
+        XMStoreFloat4x4(&M,XMMatrixAffineTransformation(S,Zero,Q,P));
+    }
+    else if (t >= Keyframes.back().TimePos)
+    {
+		XMVECTOR S = XMLoadFloat3(&Keyframes.back().Scale);
+		XMVECTOR P = XMLoadFloat3(&Keyframes.back().Translation);
+		XMVECTOR Q = XMLoadFloat4(&Keyframes.back().RotationQuat);
+
+		XMVECTOR Zero = XMVectorSet(0.F, 0.F, 0.F, 1.F);
+		XMStoreFloat4x4(&M, XMMatrixAffineTransformation(S, Zero, Q, P));
+    }
+    // 位于两个关键帧之间，进行插值
+    else
+    {
+        for (UINT i = 0; i < Keyframes.size() - 1; ++i)
+        {
+            if (t >= Keyframes[i].TimePos && t <= Keyframes[i + 1].TimePos)
+            {
+                float lerpPercent = (t-Keyframes[i].TimePos)/(Keyframes[i+1].TimePos-Keyframes[i].TimePos);
+                XMVECTOR s0 = XMLoadFloat3(&Keyframes[i].Scale);
+				XMVECTOR s1 = XMLoadFloat3(&Keyframes[i+1].Scale);
+				XMVECTOR t0 = XMLoadFloat3(&Keyframes[i].Translation);
+				XMVECTOR t1 = XMLoadFloat3(&Keyframes[i + 1].Translation);
+				XMVECTOR q0 = XMLoadFloat4(&Keyframes[i].RotationQuat);
+				XMVECTOR q1 = XMLoadFloat4(&Keyframes[i + 1].RotationQuat);
+
+                XMVECTOR S = XMVectorLerp(s0,s1,lerpPercent);
+                XMVECTOR P = XMVectorLerp(t0,t1,lerpPercent);
+                XMVECTOR Q = XMQuaternionSlerp(q0,q1,lerpPercent);
+
+				XMVECTOR Zero = XMVectorSet(0.F, 0.F, 0.F, 1.F);
+				XMStoreFloat4x4(&M, XMMatrixAffineTransformation(S, Zero, Q, P));
+            }
+        }
+    }
+}
+
 class BoxApp : public D3DApp
 {
 public:
@@ -185,6 +269,14 @@ private:
 
     // 采样器堆
     ComPtr<ID3D12DescriptorHeap> mSamplerHeap;
+
+    // 保存renderitem来更新
+    RenderItem* mSkullRenderItem;
+    XMFLOAT4X4 mSkullWorld;
+    // 动画数据.
+    float mAnimTimePos = 0.f;
+    BoneAnimation mSkullAnimation;
+
 };
 
 BoxApp::BoxApp(HINSTANCE hinstance)
@@ -622,7 +714,7 @@ bool BoxApp::Initialize()
 		meshRenderItem->StartIndexLocation = meshRenderItem->Geo->DrawArgs["mesh"].StartIndexLocation;
 		meshRenderItem->IndexCount = meshRenderItem->Geo->DrawArgs["mesh"].IndexCount;
         meshRenderItem->Mat = mMaterials["skullMat"].get();
-
+        mSkullRenderItem = meshRenderItem.get();
 		mAllRenderItems.push_back(std::move(meshRenderItem));
 
 		// 构建柱体和球体.
@@ -1148,6 +1240,51 @@ bool BoxApp::Initialize()
 
     // 等待初始化完成.
     FlushCommandQueue();
+
+
+    //初始化动画数据
+    {
+        // 定义关键帧
+        XMVECTOR q0 = XMQuaternionRotationAxis(
+            XMVectorSet(0.f,1.f,0.f,0.f),XMConvertToRadians(30.0f)
+        );
+		XMVECTOR q1 = XMQuaternionRotationAxis(
+			XMVectorSet(1.f, 1.f, 2.f, 0.f), XMConvertToRadians(45.0f)
+		);  
+        XMVECTOR q2 = XMQuaternionRotationAxis(
+			XMVectorSet(0.f, 1.f, 0.f, 0.f), XMConvertToRadians(-30.0f)
+		);  
+        XMVECTOR q3 = XMQuaternionRotationAxis(
+			XMVectorSet(1.f, 1.f, 0.f, 0.f), XMConvertToRadians(70.0f)
+		);
+
+        mSkullAnimation.Keyframes.resize(5);
+        mSkullAnimation.Keyframes[0].TimePos = 0.f;
+        mSkullAnimation.Keyframes[0].Translation = XMFLOAT3(-7.0F,0.0f,0.0f);
+        mSkullAnimation.Keyframes[0].Scale = XMFLOAT3(0.25f,0.25f,0.25f);
+        XMStoreFloat4(&mSkullAnimation.Keyframes[0].RotationQuat,q0);
+
+		mSkullAnimation.Keyframes[1].TimePos = 2.f;
+		mSkullAnimation.Keyframes[1].Translation = XMFLOAT3(0.F, 2.0f, 10.0f);
+		mSkullAnimation.Keyframes[1].Scale = XMFLOAT3(0.25f, 0.25f, 0.25f);
+		XMStoreFloat4(&mSkullAnimation.Keyframes[1].RotationQuat, q1);
+
+		mSkullAnimation.Keyframes[2].TimePos = 4.f;
+		mSkullAnimation.Keyframes[2].Translation = XMFLOAT3(7.0F, 0.0f, 0.0f);
+		mSkullAnimation.Keyframes[2].Scale = XMFLOAT3(1.25f, 1.25f, 1.25f);
+		XMStoreFloat4(&mSkullAnimation.Keyframes[2].RotationQuat, q2);
+
+		mSkullAnimation.Keyframes[3].TimePos = 6.f;
+		mSkullAnimation.Keyframes[3].Translation = XMFLOAT3(0.F, 2.f, -10.0f);
+		mSkullAnimation.Keyframes[3].Scale = XMFLOAT3(1.f, 1.25f, 1.25f);
+		XMStoreFloat4(&mSkullAnimation.Keyframes[3].RotationQuat, q3);
+
+		mSkullAnimation.Keyframes[4].TimePos = 8.f;
+		mSkullAnimation.Keyframes[4].Translation = XMFLOAT3(-7.0F, 0.0f, 0.0f);
+		mSkullAnimation.Keyframes[4].Scale = XMFLOAT3(0.25f, 0.25f, 0.25f);
+		XMStoreFloat4(&mSkullAnimation.Keyframes[4].RotationQuat, q0);
+    }
+
     return true;
 }
 
@@ -1188,6 +1325,17 @@ void BoxApp::Update(const GameTimer& gt)
 		XMVECTOR up = XMVectorSet(0.f, 1, 0.f, 0.f);
 		XMMATRIX view = XMMatrixLookAtLH(pos, target, up);
 		XMStoreFloat4x4(&mView, view);
+    }
+    // 更新动画
+    {
+        mAnimTimePos +=gt.DeltaTime();
+        if (mAnimTimePos >= mSkullAnimation.GetEndTime())
+        {
+            mAnimTimePos = 0.f;
+        }
+        mSkullAnimation.Interpolate(mAnimTimePos,mSkullWorld);
+        mSkullRenderItem->World = mSkullWorld;
+        mSkullRenderItem->NumFramesDirty = gNumFrameResources;
     }
 
 
