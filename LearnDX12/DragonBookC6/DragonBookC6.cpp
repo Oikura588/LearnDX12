@@ -17,7 +17,6 @@ static const  int gNumFrameResources=1;
 struct Vertex
 {
     XMFLOAT3 Pos;
-    XMFLOAT4 Color;
     XMFLOAT3 Normal;
     XMFLOAT2 TexC;
 };
@@ -358,7 +357,6 @@ bool BoxApp::Initialize()
 		for (size_t i = 0; i < box.Vertices.size(); ++i, ++k)
 		{
 			vertices[k].Pos = box.Vertices[i].Position;
-			vertices[k].Color = XMFLOAT4(DirectX::Colors::DarkGreen);
             vertices[k].Normal = box.Vertices[i].Normal;
             vertices[k].TexC = box.Vertices[i].TexC;
 
@@ -366,7 +364,6 @@ bool BoxApp::Initialize()
 		for (size_t i = 0; i < grid.Vertices.size(); ++i, ++k)
 		{
 			vertices[k].Pos = grid.Vertices[i].Position;
-			vertices[k].Color = XMFLOAT4(DirectX::Colors::ForestGreen);
 			vertices[k].Normal = grid.Vertices[i].Normal;
 			vertices[k].TexC = grid.Vertices[i].TexC;
 
@@ -375,7 +372,6 @@ bool BoxApp::Initialize()
 		for (size_t i = 0; i < sphere.Vertices.size(); ++i, ++k)
 		{
 			vertices[k].Pos = sphere.Vertices[i].Position;
-			vertices[k].Color = XMFLOAT4(DirectX::Colors::Crimson);
 			vertices[k].Normal = sphere.Vertices[i].Normal;
 			vertices[k].TexC = sphere.Vertices[i].TexC;
 
@@ -383,7 +379,6 @@ bool BoxApp::Initialize()
 		for (size_t i = 0; i < cylinder.Vertices.size(); ++i, ++k)
 		{
 			vertices[k].Pos = cylinder.Vertices[i].Position;
-			vertices[k].Color = XMFLOAT4(DirectX::Colors::SteelBlue);
 			vertices[k].Normal = cylinder.Vertices[i].Normal;
 			vertices[k].TexC = cylinder.Vertices[i].TexC;
 
@@ -391,7 +386,6 @@ bool BoxApp::Initialize()
 		for (size_t i = 0; i < mesh.Vertices.size(); ++i, ++k)
 		{
 			vertices[k].Pos = mesh.Vertices[i].Position;
-			vertices[k].Color = XMFLOAT4(DirectX::Colors::White);
 			vertices[k].Normal = mesh.Vertices[i].Normal;
 			vertices[k].TexC = mesh.Vertices[i].TexC;
 
@@ -777,24 +771,31 @@ bool BoxApp::Initialize()
 	    skullTex->FileName = L"Textures\\white1x1.dds";
 	    ThrowIfFailed(DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(), mCommandList.Get(), skullTex->FileName.c_str(), skullTex->Resource, skullTex->UploadHeap));
 
-		for (UINT i = 0; i < mSkinnedMats.size(); ++i)
-		{
-			std::string diffuseName = mSkinnedMats[i].DiffuseMapName;
-			std::wstring diffuseFileName = L"Textures\\" + AnsiToWString(diffuseName);
-			diffuseName = diffuseName.substr(0, diffuseName.find_last_of("."));
-			mSkinnedTextureNames.push_back(diffuseName);
-
-			auto Tex = std::make_unique<Texture>();
-			Tex->Name = diffuseName;
-			Tex->FileName = diffuseFileName;
-			ThrowIfFailed(DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(), mCommandList.Get(), Tex->FileName.c_str(), Tex->Resource, Tex->UploadHeap));
-			mTextures[Tex->Name] = std::move(Tex);
-		}
 
 	    mTextures[brickTex->Name] = std::move(brickTex);
 	    mTextures[stoneTex->Name] = std::move(stoneTex);
 	    mTextures[tileTex->Name] = std::move(tileTex);
 	    mTextures[skullTex->Name] = std::move(skullTex);
+
+		for (UINT i = 0; i < mSkinnedMats.size(); ++i)
+		{
+			std::string diffuseName = mSkinnedMats[i].DiffuseMapName;
+			std::wstring diffuseFileName = L"Textures\\" + AnsiToWString(diffuseName);
+			diffuseName = diffuseName.substr(0, diffuseName.find_last_of("."));
+			// 不能重复，否则map会把前一个覆盖掉，然后commandlist提交的时候会出问题
+			if (mTextures.find(diffuseName) == std::end(mTextures))
+			{
+				mSkinnedTextureNames.push_back(diffuseName);
+
+				auto Tex = std::make_unique<Texture>();
+				Tex->Name = diffuseName;
+				Tex->FileName = diffuseFileName;
+				ThrowIfFailed(DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(), mCommandList.Get(), Tex->FileName.c_str(), Tex->Resource, Tex->UploadHeap));
+				mTextures[Tex->Name] = std::move(Tex);
+			}
+
+		}
+
 
 	}
 	// Build material.
@@ -988,7 +989,7 @@ bool BoxApp::Initialize()
             // 所有渲染项绑定一个骨骼实例.
             renderItem->SkinnedCBIndex = 0;
             renderItem->SkinnedModelInst = mSkinnedModelInst.get();
-			//mAllRenderItems.push_back(std::move(renderItem));
+			mAllRenderItems.push_back(std::move(renderItem));
 
         }
 
@@ -1170,7 +1171,7 @@ bool BoxApp::Initialize()
 		for (int frameIndex = 0; frameIndex < gNumFrameResources; ++frameIndex)
 		{
 			auto SkinnedCB = mFrameResources[frameIndex]->SkinnedCB->Resource();
-			UINT skinCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(PassConstants));
+			UINT skinCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(SkinnedConstants));
 			D3D12_GPU_VIRTUAL_ADDRESS passAddress = SkinnedCB->GetGPUVirtualAddress();
 
 			D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
@@ -1417,17 +1418,16 @@ bool BoxApp::Initialize()
     {
         mInputLayout = {
             {"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0,0,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0,},
-            {"COLOR",0,DXGI_FORMAT_R32G32B32A32_FLOAT,0,12,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
-			{"NORMAL",0,DXGI_FORMAT_R32G32B32_FLOAT,0,28,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
-			{"TEXCOORD",0,DXGI_FORMAT_R32G32_FLOAT,0,40,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0}
+			{"NORMAL",0,DXGI_FORMAT_R32G32B32_FLOAT,0,12,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
+			{"TEXCOORD",0,DXGI_FORMAT_R32G32_FLOAT,0,24,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0}
         };
         mSkinnedVertexInputLayout = {
 			{"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0,0,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0,},
-			{"COLOR",0,DXGI_FORMAT_R32G32B32A32_FLOAT,0,12,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
-			{"NORMAL",0,DXGI_FORMAT_R32G32B32_FLOAT,0,28,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
-			{"TEXCOORD",0,DXGI_FORMAT_R32G32_FLOAT,0,40,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
-            {"BONEWEIGHTS",0,DXGI_FORMAT_R32G32B32_FLOAT,0,48,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
-			{"BONEINDICES",0,DXGI_FORMAT_R8G8B8A8_UINT,0,60,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0}
+			{"NORMAL",0,DXGI_FORMAT_R32G32B32_FLOAT,0,12,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
+			{"TEXCOORD",0,DXGI_FORMAT_R32G32_FLOAT,0,24,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
+			{"TANGENT",0,DXGI_FORMAT_R32G32B32_FLOAT,0,32,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
+            {"BONEWEIGHTS",0,DXGI_FORMAT_R32G32B32_FLOAT,0,44,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
+			{"BONEINDICES",0,DXGI_FORMAT_R8G8B8A8_UINT,0,56,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0}
         };
     }
 
@@ -1527,8 +1527,9 @@ bool BoxApp::Initialize()
 		{
 			reinterpret_cast<BYTE*>(mShaders["skinnedVS"]->GetBufferPointer()),mShaders["skinnedVS"]->GetBufferSize()
 		};
+        characterDesc.InputLayout = { mSkinnedVertexInputLayout.data(),(UINT)mSkinnedVertexInputLayout.size() };
 		ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
-			&pipelineStateDesc, IID_PPV_ARGS(&mPSOs["modelPSO"])
+			&characterDesc, IID_PPV_ARGS(&mPSOs["modelPSO"])
 		));
 
     }
@@ -1584,7 +1585,6 @@ void BoxApp::Update(const GameTimer& gt)
 		XMStoreFloat4x4(&mView, view);
     }
   
-
 
     // 循环获取FrameResource
     // 只有CPU比GPU快很多的情况需要特殊处理，其他情况下如果CPU很慢，每次Update后GPU都能直接Draw完成开始下次Update
@@ -1678,15 +1678,16 @@ void BoxApp::Update(const GameTimer& gt)
 	
         currPassCB->CopyData(0,passConstants);
     }
+	// 更新动画的CB
+	{
+		auto currentAnimCB = mCurrentFrameResource->SkinnedCB.get();
+		SkinnedConstants skinnedConstants;
+		mSkinnedModelInst->UpdateSkinnedAnimation(gt.DeltaTime());
+		std::copy(mSkinnedModelInst->FinalTransforms.begin(), mSkinnedModelInst->FinalTransforms.end(), &skinnedConstants.BoneTransform[0]);
+		currentAnimCB->CopyData(0, skinnedConstants);
+	}
 
-    // 更新动画的CB
-    {
-		/*auto currentAnimCB = mCurrentFrameResource->SkinnedCB.get();
-        SkinnedConstants skinnedConstants;
-        mSkinnedModelInst->UpdateSkinnedAnimation(gt.DeltaTime());
-        std::copy(mSkinnedModelInst->FinalTransforms.begin(),mSkinnedModelInst->FinalTransforms.end(),&skinnedConstants.BoneTransform[0]);
-        currentAnimCB->CopyData(0,skinnedConstants);*/
-    }
+ 
     
     // // 更新Constant Buffer.
     // float x = mRadius*sinf(mPhi)*cosf(mTheta);
@@ -1745,74 +1746,73 @@ void BoxApp::Draw(const GameTimer& gt)
     mCommandList->OMSetRenderTargets(1,&CurrentBackBufferDescriptor(),true,&DepthStencilDescriptor());
 
  //   
- //   mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
-	//// 设置采样器
-	//// 描述符相关.用来更新采样器
-	//ID3D12DescriptorHeap* samplerHeaps[] = { mSamplerHeap.Get() };
-	//mCommandList->SetDescriptorHeaps(_countof(samplerHeaps), samplerHeaps);
-	//mCommandList->SetGraphicsRootDescriptorTable(4, mSamplerHeap->GetGPUDescriptorHandleForHeapStart());
+    mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
+	// 设置采样器
+	// 描述符相关.用来更新采样器
+	ID3D12DescriptorHeap* samplerHeaps[] = { mSamplerHeap.Get() };
+	mCommandList->SetDescriptorHeaps(_countof(samplerHeaps), samplerHeaps);
+	mCommandList->SetGraphicsRootDescriptorTable(4, mSamplerHeap->GetGPUDescriptorHandleForHeapStart());
 
-	//// 描述符相关.用来更新常量缓冲区
-	//ID3D12DescriptorHeap* descHeaps[] = { mCbvHeap.Get() };
-	//mCommandList->SetDescriptorHeaps(_countof(descHeaps), descHeaps);
+	// 描述符相关.用来更新常量缓冲区
+	ID3D12DescriptorHeap* descHeaps[] = { mCbvHeap.Get() };
+	mCommandList->SetDescriptorHeaps(_countof(descHeaps), descHeaps);
 
- //   int passCbvIndex = mPassCbvOffset + mCurrentFrameIndex;
- //   auto passCbvHandle = mCbvHeap->GetGPUDescriptorHandleForHeapStart();
- //   passCbvHandle.ptr +=passCbvIndex*mCbvUavDescriptorSize;
- //   mCommandList->SetGraphicsRootDescriptorTable(2,passCbvHandle);
+    int passCbvIndex = mPassCbvOffset + mCurrentFrameIndex;
+    auto passCbvHandle = mCbvHeap->GetGPUDescriptorHandleForHeapStart();
+    passCbvHandle.ptr +=passCbvIndex*mCbvUavDescriptorSize;
+    mCommandList->SetGraphicsRootDescriptorTable(2,passCbvHandle);
 
- //   // 绘制一个物体需要绑定两个buffer、设置图元类型、设置常量缓冲区等，把这些绘制一个物体需要的数据整合起来，可以作为RenderItem.
-	//// 绘制物体
-	//{
-	//	UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
-	//	UINT matCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(MaterialConstants));
-	//	UINT skinCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(SkinnedConstants));
+    // 绘制一个物体需要绑定两个buffer、设置图元类型、设置常量缓冲区等，把这些绘制一个物体需要的数据整合起来，可以作为RenderItem.
+	// 绘制物体
+	{
+		UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
+		UINT matCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(MaterialConstants));
+		UINT skinCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(SkinnedConstants));
 
-	//	auto objCB = mCurrentFrameResource->ObjectsCB->Resource();
+		auto objCB = mCurrentFrameResource->ObjectsCB->Resource();
 
-	//	for (size_t i = 0; i < mOpaqueRenderItems.size(); ++i)
-	//	{
+		for (size_t i = 0; i < mOpaqueRenderItems.size(); ++i)
+		{
 
-	//		auto ri = mOpaqueRenderItems[i];
-	//		mCommandList->IASetVertexBuffers(0,1,&ri->Geo->VertexBufferView());
-	//		mCommandList->IASetIndexBuffer(&ri->Geo->IndexBufferView());
-	//		mCommandList->IASetPrimitiveTopology(ri->PrimitiveTopology);
-	//		D3D12_GPU_DESCRIPTOR_HANDLE cbvHandle =  mCbvHeap->GetGPUDescriptorHandleForHeapStart();
-	//		cbvHandle.ptr+= (ri->ObjCBOffset+mOpaqueRenderItems.size()*mCurrentFrameIndex)*mCbvUavDescriptorSize;
-	//		mCommandList->SetGraphicsRootDescriptorTable(0, cbvHandle);
- //           // 设置材质
-	//	 /*   D3D12_GPU_DESCRIPTOR_HANDLE matHandle= mCbvHeap->GetGPUDescriptorHandleForHeapStart();
-	//		matHandle.ptr += (mMaterialCbvOffset + mCurrentFrameIndex * mMaterials.size() + ri->Mat->MatCBIndex) * mCbvUavDescriptorSize;
-	//		mCommandList->SetGraphicsRootDescriptorTable(1, matHandle);*/
+			auto ri = mOpaqueRenderItems[i];
+			mCommandList->IASetVertexBuffers(0,1,&ri->Geo->VertexBufferView());
+			mCommandList->IASetIndexBuffer(&ri->Geo->IndexBufferView());
+			mCommandList->IASetPrimitiveTopology(ri->PrimitiveTopology);
+			D3D12_GPU_DESCRIPTOR_HANDLE cbvHandle =  mCbvHeap->GetGPUDescriptorHandleForHeapStart();
+			cbvHandle.ptr+= (ri->ObjCBOffset+mOpaqueRenderItems.size()*mCurrentFrameIndex)*mCbvUavDescriptorSize;
+			mCommandList->SetGraphicsRootDescriptorTable(0, cbvHandle);
+            // 设置材质
+		    D3D12_GPU_DESCRIPTOR_HANDLE matHandle= mCbvHeap->GetGPUDescriptorHandleForHeapStart();
+			matHandle.ptr += (mMaterialCbvOffset + mCurrentFrameIndex * mMaterials.size() + ri->Mat->MatCBIndex) * mCbvUavDescriptorSize;
+			mCommandList->SetGraphicsRootDescriptorTable(1, matHandle);
 
- //           // 设置纹理
- //       /*    D3D12_GPU_DESCRIPTOR_HANDLE texHandle = mCbvHeap->GetGPUDescriptorHandleForHeapStart();
- //           texHandle.ptr +=(mSrvOffset + mCurrentFrameIndex*mTextures.size() + ri->Mat->DiffuseSrvHeapIndex) *mCbvUavDescriptorSize;
- //           mCommandList->SetGraphicsRootDescriptorTable(3,texHandle);*/
+            // 设置纹理
+            D3D12_GPU_DESCRIPTOR_HANDLE texHandle = mCbvHeap->GetGPUDescriptorHandleForHeapStart();
+            texHandle.ptr +=(mSrvOffset + mCurrentFrameIndex*mTextures.size() + ri->Mat->DiffuseSrvHeapIndex) *mCbvUavDescriptorSize;
+            mCommandList->SetGraphicsRootDescriptorTable(3,texHandle);
 
- //           // 设置模型
-	//		D3D12_GPU_DESCRIPTOR_HANDLE skinHandle = mCbvHeap->GetGPUDescriptorHandleForHeapStart();
-	//		/*if (ri->SkinnedModelInst != nullptr)
-	//		{
-	//			mCommandList->SetPipelineState(mPSOs["modelPSO"].Get());
+            // 设置模型
+			D3D12_GPU_DESCRIPTOR_HANDLE skinHandle = mCbvHeap->GetGPUDescriptorHandleForHeapStart();
+			if (ri->SkinnedModelInst != nullptr)
+			{
+				mCommandList->SetPipelineState(mPSOs["modelPSO"].Get());
 
-	//			skinHandle.ptr += (mSkinOffset + mCurrentFrameIndex + ri->SkinnedCBIndex) * mCbvUavDescriptorSize;
-	//			mCommandList->SetGraphicsRootDescriptorTable(5, skinHandle);
-	//		}
-	//		else*/
- //           {
-	//			/*	mCommandList->SetPipelineState(mPSOs["defaultPSO"].Get());
+				skinHandle.ptr += (mSkinOffset + mCurrentFrameIndex + ri->SkinnedCBIndex) * mCbvUavDescriptorSize;
+				mCommandList->SetGraphicsRootDescriptorTable(5, skinHandle);
+			}
+			else
+            {
+				mCommandList->SetPipelineState(mPSOs["defaultPSO"].Get());
 
-	//				mCommandList->SetGraphicsRootDescriptorTable(5, skinHandle);*/
- //           }
+				mCommandList->SetGraphicsRootDescriptorTable(5, skinHandle);
+            }
 
-	//		mCommandList->DrawIndexedInstanced(ri->IndexCount,1,ri->StartIndexLocation,ri->BaseVertexLocation,0);
- //           //mCommandList->DrawIndexedInstanced(3,1,0,0,0);
-	//	}
+			mCommandList->DrawIndexedInstanced(ri->IndexCount,1,ri->StartIndexLocation,ri->BaseVertexLocation,0);
+		}
 
-	//}
+	}
 
- //   
+    
     // 绘制完成后改变资源状态.
     mCommandList->ResourceBarrier(
         1,&CD3DX12_RESOURCE_BARRIER::Transition(

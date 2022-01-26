@@ -64,10 +64,10 @@ cbuffer cbSkinned : register(b3)
 struct VertexIn
 {
   float3 PosL  : POSITION;
-  float4 Color : COLOR;
   float3 NormalL: NORMAL;
     float2 TexC : TEXCOORD;
 #ifdef SKINNED
+    float3 TangetL : TANGENT;
     float3 BoneWeights : BONEWEIGHTS;
     uint4 BoneIndices  : BONEINDICES;
 #endif
@@ -77,7 +77,6 @@ struct VertexOut
 {
     float4 PosH  : SV_POSITION;
     float3 PosW : POSITION;
-    float4 Color : COLOR;
     float3 NormalW:NORMAL;
     float2 TexC : TEXCOORD;
 };
@@ -112,9 +111,7 @@ VertexOut VS(VertexIn vin)
     vout.PosH = mul(PosW, gViewProj);
     vout.PosW = PosW;
     vout.NormalW = mul(vin.NormalL, transpose((float3x3) gInvWorld));
-  // Just pass vertex color into the pixel shader.
-  vout.Color = vin.Color;
-    
+  // Just pass vertex color into the pixel shader.    
     float4 texC = mul(float4(vin.TexC, 0, 1), gTexTransform);
     vout.TexC = mul(texC, gMatTransform).xy;
   return vout;
@@ -137,7 +134,7 @@ float4 PS(VertexOut pin) : SV_Target
     Material mat = { diffuseAlbedo, gFresnelR0, shiness };
     float4 directLight = ComputeLighting(gLights, mat, pin.PosW, pin.NormalW, toEye, shadowFactor);
     
-    float4 litColor = (1.0*(ambient + directLight) + 0.0*pin.Color);
+    float4 litColor = (1.0*(ambient + directLight) );
     litColor.a = gDiffuseAlbedo.a;
     return litColor;
 }
